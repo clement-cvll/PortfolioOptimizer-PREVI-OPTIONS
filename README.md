@@ -16,11 +16,11 @@ The analysis is done in the `performance-analysis.ipynb` file. The visualization
 
 Notably, the average performance according to the Morningstar category is plotted below.
 
-![Average performance according to the Morningstar category](visualizations/average_performance_category.png){width=1000}
+![Average performance according to the Morningstar category](visualizations/average_performance_category.png)
 
 The returns over volatility is plotted below.
 
-![Performance over volatility](visualizations/performance_volatility_analysis_3_years.png){width=1000}
+![Performance over volatility](visualizations/performance_volatility_analysis_3_years.png)
 
 ## Portfolio Optimizer
 
@@ -43,11 +43,11 @@ python portfolio-optimizer.py
 
 The optimizer is able to find a portfolio that maximizes the Sharpe ratio. Here are some of the results:
 
-![Portfolio](visualizations/portfolio_allocation_10.0%.png){width=1000}
+![Portfolio 10](visualizations/portfolio_allocation_10.png)
 Portfolio allocation for a 10% maximum single position size.
 
-![Portfolio](visualizations/portfolio_allocation_20.0%.png){width=1000}
+![Portfolio 20](visualizations/portfolio_allocation_20.png)
 Portfolio allocation for a 20% maximum single position size.
 
-![Portfolio](visualizations/portfolio_allocation_30.0%.png){width=1000}
+![Portfolio 30](visualizations/portfolio_allocation_30.png)
 Portfolio allocation for a 30% maximum single position size.

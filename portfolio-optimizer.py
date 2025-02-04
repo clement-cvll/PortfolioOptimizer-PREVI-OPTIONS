@@ -194,7 +194,7 @@ def main():
     # Optimize the portfolio
     optimizer = PortfolioOptimizer(
         data_manager=data_manager,
-        max_position_size=0.3,
+        max_position_size=0.1,
         risk_free_rate=0.04,
     )
     portfolio = optimizer.optimize_portfolio()
@@ -207,7 +207,12 @@ def main():
     # Plot and save allocation visualization
     os.makedirs('visualizations', exist_ok=True)
     allocation = optimizer.get_allocation_summary()
-    plot_portfolio_allocation( allocation, save_path=os.path.join('visualizations', f'portfolio_allocation_{optimizer.max_position_size*100}%.png'), compound_return=portfolio.compound_return*100, years=data_manager.returns_data.shape[1])
+    plot_portfolio_allocation( 
+        allocation, 
+        save_path=os.path.join('visualizations', f'portfolio_allocation_{round(optimizer.max_position_size*100)}.png'), 
+        compound_return=portfolio.compound_return*100, 
+        years=data_manager.returns_data.shape[1]
+    )
     print("\nAsset Allocation:")
     print(allocation)
 
