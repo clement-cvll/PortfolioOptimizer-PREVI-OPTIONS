@@ -19,12 +19,12 @@ class DataManager:
         self.df = self._load_and_clean_data()
         self.category_data = self._prepare_category_data()
         self.returns_data = self._prepare_returns_data()
+        self.covariance_matrix = self._calculate_covariance_matrix()
 
     def _load_and_clean_data(self) -> pd.DataFrame:
         """Load and clean the data"""
-        df = pd.read_csv(self.data_path)
-        df = df[['ISIN', 'Unit of account', 'Category', '2018', '2019', '2020', '2021', '2022', '2023', '2024', 'Volatility 3 years', 'Fees', 'Sharpe']]
-        df.set_index('ISIN', inplace=True)
+        df = pd.read_csv(self.data_path, index_col=0, header=0)
+        df = df[['Unit of account', 'Category', '2018', '2019', '2020', '2021', '2022', '2023', '2024', 'Volatility 5 years', 'Volatility 3 years', 'Fees', 'Sharpe']]
         return df
 
     def _prepare_category_data(self) -> pd.DataFrame:
@@ -44,9 +44,14 @@ class DataManager:
 
     def _prepare_returns_data(self) -> pd.DataFrame:
         """Prepare returns data"""
-        returns_cols = [ '2020', '2021', '2022', '2023', '2024']
+        returns_cols = ['2020', '2021', '2022', '2023', '2024']
         returns_data = self.df[returns_cols].copy()
         return returns_data
+
+    def _calculate_covariance_matrix(self) -> pd.DataFrame:
+        """Calculate covariance matrix of annual returns"""
+        # For annual returns data, no need for daily conversion
+        return self.returns_data.T.cov()  # Direct covariance of annual returns
 
 @dataclass
 class Portfolio:
@@ -67,11 +72,21 @@ class PortfolioOptimizer:
 
     def _portfolio_stats(self, weights: np.ndarray) -> tuple:
         """Calculate portfolio statistics"""
-        portfolio_compound_return = np.sum(weights * (np.prod(1 + self.data_manager.returns_data, axis=1) - 1))
-        portfolio_return = np.sum(weights * self.data_manager.returns_data.mean(axis=1))
-        portfolio_standard_deviation = np.sqrt(np.sum(weights * self.data_manager.df['Volatility 3 years'].values))
-        sharpe_ratio = (portfolio_return - self.risk_free_rate) / portfolio_standard_deviation
-        return portfolio_compound_return, sharpe_ratio
+        # Expected annual return
+        expected_return = np.dot(weights, self.data_manager.returns_data.mean(axis=1))
+        
+        # Portfolio volatility (standard deviation)
+        cov_matrix = self.data_manager.covariance_matrix.values
+        portfolio_volatility = np.sqrt(weights.T @ cov_matrix @ weights)
+        
+        # Sharpe ratio
+        sharpe_ratio = (expected_return - self.risk_free_rate) / portfolio_volatility
+        
+        # Compound return
+        annual_returns = self.data_manager.returns_data.T @ weights
+        compound_return = np.prod(1 + annual_returns) - 1
+        
+        return compound_return, sharpe_ratio
 
     def _negative_objective(self, weights: np.ndarray) -> float:
         """Objective function to minimize"""
@@ -162,7 +177,7 @@ def plot_portfolio_allocation(allocation: pd.DataFrame, save_path: str, compound
     plt.gca().add_artist(centre_circle)
     
     # Compound return and duration in center
-    plt.text(0, 0.1, f"Compound return: {compound_return:.1f}%", 
+    plt.text(0, 0.1, f"Compound return: +{compound_return:.1f}%", 
              ha='center', va='center', fontsize=10, fontweight='bold')
     plt.text(0, -0.1, f"({years} years)", 
              ha='center', va='center', fontsize=9)
@@ -183,7 +198,10 @@ def main():
     """Main function to run the portfolio optimizer"""
     if not os.path.exists(os.path.join('data', 'processed', 'data.csv')):
         print("Processing data...")
-        process_data(os.path.join('data', 'PREVI-OPTIONS.xls'))
+        process_data(
+            os.path.join('data', 'PREVI-OPTIONS.xls'),
+            min_return=0.05
+        )
 
     # Preprocess the data
     data_manager = DataManager(
@@ -194,14 +212,14 @@ def main():
     # Optimize the portfolio
     optimizer = PortfolioOptimizer(
         data_manager=data_manager,
-        max_position_size=0.1,
-        risk_free_rate=0.04,
+        max_position_size=0.5,
+        risk_free_rate=0.044,
     )
     portfolio = optimizer.optimize_portfolio()
 
     # Get the portfolio metrics
     print("\nPortfolio Metrics:")
-    print(f"Compound Return: {portfolio.compound_return*100:.2f}%  ({data_manager.returns_data.shape[1]} years)")
+    print(f"Compound Return: +{portfolio.compound_return*100:.2f}%  ({data_manager.returns_data.shape[1]} years)")
     print(f"Sharpe Ratio: {portfolio.sharpe_ratio:.2f}")
 
     # Plot and save allocation visualization

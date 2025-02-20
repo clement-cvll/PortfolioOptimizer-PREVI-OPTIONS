@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 
-def process_data(data_path: str):
+def process_data(data_path: str, min_return: float = 0.05):
     """Process the data"""
     df = pd.read_excel(data_path)
     df = df.iloc[1:]
@@ -34,6 +34,7 @@ def process_data(data_path: str):
     df['Fees'] = df['Fees'].str.replace(',', '.').str.replace('%', '').astype(float) / 100
     df[df.select_dtypes(include=['float64', 'int64']).columns] = df[df.select_dtypes(include=['float64', 'int64']).columns].round(4)
     df.set_index('ISIN', inplace=True)
+    df = df[df[['2020', '2021', '2022', '2023', '2024']].mean(axis=1) > min_return]
     df.to_csv(os.path.join('data', 'processed', 'data.csv'), index=True)
 
 if __name__ == '__main__':
