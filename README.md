@@ -1,59 +1,59 @@
-# Portfolio Optimizer for PREVI-OPTIONS
+# Portfolio Optimizer - PREVI-OPTIONS
 
-This project is a portfolio optimizer for PREVI-OPTIONS French assurance-vie funds.
+This repository contains a Python-based portfolio optimization tool leveraging the Markowitz Modern Portfolio Theory (MPT). It connects to a PostgreSQL database to fetch historical asset data, performs data cleaning and transformation, and then optimizes portfolio weights to maximize the Sharpe Ratio under specified constraints.
 
-## Preprocessing
+## Features
 
-The data comes as an Excel file named PREVI-OPTIONS.xls. The file can be found on the [PREVI-OPTIONS website](https://www.previ-direct.com/web/eclient-suravenir/perf-uc-previ-options).
+*   **Data Ingestion:** Connects to a PostgreSQL database to retrieve historical `close` prices and `ticker` information for various assets.
+*   **Data Preparation:**
+    *   Filters data to a specified historical period (e.g., last X years).
+    *   Handles missing values by dropping assets or dates with insufficient data.
+    *   Calculates daily returns, mean returns, and the covariance matrix.
+    *   Applies regularization to the covariance matrix for numerical stability.
+*   **Markowitz Optimization:**
+    *   Implements the Markowitz MPT to find optimal asset weights.
+    *   Maximizes the Sharpe Ratio (risk-adjusted return).
+    *   Supports "long-only" constraints (weights between 0 and 1) and a sum-to-one constraint.
+    *   Filters out assets with insignificant optimal weights (e.g., < 1%).
+*   **Performance Analysis:**
+    *   Calculates and displays the portfolio's annualized geometric return over the specified period.
+    *   Computes the portfolio's annualized Sharpe Ratio, annualized return, and volatility.
+*   **Visualization:** Plots the normalized portfolio value over time and displays asset allocation in a pie chart.
 
-The preprocessing is done in the `preprocessing.py` file.
+## Setup and Installation
 
-The processed data is saved in the `data/processed/data.csv` file.
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-username/PortfolioOptimizer-PREVI-OPTIONS.git
+    cd PortfolioOptimizer-PREVI-OPTIONS
+    ```
+2.  **Set up a uv project:**
+    ```bash
+    uv sync
+    ```
+4.  **Database Setup:**
+    *   **Start TimescaleDB (PostgreSQL) using Docker:**
+        ```bash
+        # Pull the TimescaleDB Docker image (if not already pulled)
+        ./src/database/init.sh
+        # Start the Docker container
+        ./src/database/start.sh
+        ```
+        This will start a PostgreSQL instance with TimescaleDB extension on port `5432` with user `postgres` and password `password`.
+    *   **Populate the database:**
+        Run the `fetch_tickers.py` and `build_database.py` script to create the `opcvm_data` table and insert historical asset data (from `tickers.csv` via `yfinance`).
+        ```bash
+        cd src
+        uv run fetch_tickers.py
+        uv run build_database.py
+        ```
 
-## Analysis
+## Usage
 
-The analysis is done in the `performance-analysis.ipynb` file. The visualizations are stored in the `visualizations` folder.
+The core logic is implemented in a Jupyter Notebook, typically `src/notebook/1-markowitz.ipynb`.
 
-Notably, the average performance according to the Morningstar category is plotted below.
+The notebook will guide you through data loading, cleaning, optimization, and performance analysis.
 
-![Average performance according to the Morningstar category](visualizations/average_performance_category.png)
+## License
 
-The returns over volatility is plotted below.
-
-![Performance over volatility](visualizations/performance_volatility_analysis_3_years.png)
-
-## Portfolio Optimizer
-
-A basic portfolio optimizer is implemented in the `portfolio-optimizer.py` file. The simplicity of the data induced me to implement a basic optimization strategy.
-
-The optimizer maximizes the Sharpe ratio, which is defined as the ratio of the portfolio return minus the risk-free rate over the portfolio volatility, which is defined as the square root of the portfolio variance, using the covariance matrix of the yearly returns.
-
-### Running the optimizer
-
-To run the optimizer, you can use the following command:
-
-```bash
-python -m venv venv
-source venv/bin/activate # On Windows: venv\Scripts\activate
-pip install -r requirements.txt
-python portfolio-optimizer.py
-```
-
-## Conclusion
-
-The optimizer is able to find a portfolio that maximizes the Sharpe ratio. Here are some of the results:
-
-![Portfolio 10](visualizations/portfolio_allocation_10.png)
-Portfolio allocation for a 10% maximum single position size.
-
-![Portfolio 20](visualizations/portfolio_allocation_20.png)
-Portfolio allocation for a 20% maximum single position size.
-
-![Portfolio 30](visualizations/portfolio_allocation_30.png)
-Portfolio allocation for a 30% maximum single position size.
-
-### Limitations
-
-The optimizer is based on yearly returns, and so is the resulting Sharpe ratio. The Sharpe ratio should be calculated on daily values for an accurate risk-adjusted performance evaluation.
-
-As some products have not been available for the whole period, the optimizer has been run on a subset of the data. The optimizer should be run on the whole period to get a more accurate result.
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
