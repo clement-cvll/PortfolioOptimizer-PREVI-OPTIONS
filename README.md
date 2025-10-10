@@ -18,7 +18,17 @@ This repository contains a Python-based portfolio optimization tool leveraging t
 *   **Performance Analysis:**
     *   Calculates and displays the portfolio's annualized geometric return over the specified period.
     *   Computes the portfolio's annualized Sharpe Ratio, annualized return, and volatility.
-*   **Visualization:** Plots the normalized portfolio value over time and displays asset allocation in a pie chart.
+*   **Visualization:** 
+    *   Interactive Plotly scatter plots showing portfolio optimization results
+    *   Efficient frontier visualization
+    *   Portfolio value over time analysis
+    *   Monte Carlo simulation results with 10M+ portfolio combinations
+
+## Results
+
+![Portfolio frontier](https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS/blob/main/src/figures/markovitz_portfolio_frontier.png)
+
+![Portfolio value and daily returns](https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS/blob/main/src/figures/markovitz_portfolio_value_and_returns.png)
 
 ## Setup and Installation
 
@@ -31,7 +41,7 @@ This repository contains a Python-based portfolio optimization tool leveraging t
     ```bash
     uv sync
     ```
-4.  **Database Setup:**
+3.  **Database Setup:**
     *   **Start TimescaleDB (PostgreSQL) using Docker:**
         ```bash
         # Pull the TimescaleDB Docker image (if not already pulled)
@@ -50,10 +60,38 @@ This repository contains a Python-based portfolio optimization tool leveraging t
 
 ## Usage
 
-The core logic is implemented in a Jupyter Notebook, typically `src/notebook/1-markowitz.ipynb`.
+The core logic is implemented in a Jupyter Notebook: `src/notebook/1-markowitz.ipynb`.
 
-The notebook will guide you through data loading, cleaning, optimization, and performance analysis.
+The notebook includes:
+- Data loading and cleaning from TimescaleDB
+- Monte Carlo simulation with 10M+ portfolio combinations
+- Markowitz optimization using scipy.optimize
+- Efficient frontier calculation
+- Interactive visualizations with Plotly
+- Portfolio performance analysis over time
+
+## Project Structure
+
+```
+src/
+├── notebook/
+│   └── 1-markowitz.ipynb          # Main portfolio optimization notebook
+├── database/
+│   ├── init.sh                    # Database initialization script
+│   └── start.sh                   # Database startup script
+├── figures/                       # Generated visualization outputs
+├── fetch_tickers.py              # Script to fetch ticker data
+└── build_database.py             # Script to build and populate database
+```
+
+## Key Parameters
+
+- **YEARS**: Historical data period (default: 7 years)
+- **MAX_WEIGHT**: Maximum weight per asset (default: 30%)
+- **RISK_FREE_ANNUAL**: Risk-free rate for Sharpe ratio calculation (default: 2.2% based on fonds en euro)
+- **Monte Carlo simulations**: 10M+ portfolio combinations for efficient frontier exploration
 
 ## License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+
