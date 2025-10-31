@@ -19,10 +19,10 @@ This repository contains a Python-based portfolio optimization tool leveraging t
     *   Calculates and displays the portfolio's annualized geometric return over the specified period.
     *   Computes the portfolio's annualized Sharpe Ratio, annualized return, and volatility.
 *   **Visualization:** 
-    *   Interactive Plotly scatter plots showing portfolio optimization results
+    *   Matplotlib scatter plots showing portfolio optimization results
     *   Efficient frontier visualization
     *   Portfolio value over time analysis
-    *   Monte Carlo simulation results with 10M+ portfolio combinations
+    *   Monte Carlo simulation results with 5M portfolio combinations
 
 ## Results
 
@@ -60,14 +60,14 @@ This repository contains a Python-based portfolio optimization tool leveraging t
 
 ## Usage
 
-The core logic is implemented in a Jupyter Notebook: `src/notebook/1-markowitz.ipynb`.
+The core logic is implemented in a Jupyter Notebook: `src/notebook/1_markovitz.ipynb`.
 
 The notebook includes:
 - Data loading and cleaning from TimescaleDB
-- Monte Carlo simulation with 10M+ portfolio combinations
+- Monte Carlo simulation with 5M portfolio combinations
 - Markowitz optimization using scipy.optimize
 - Efficient frontier calculation
-- Interactive visualizations with Plotly
+- Visualizations with Matplotlib
 - Portfolio performance analysis over time
 
 ## Project Structure
@@ -75,13 +75,14 @@ The notebook includes:
 ```
 src/
 ├── notebook/
-│   └── 1-markowitz.ipynb          # Main portfolio optimization notebook
+│   └── 1_markovitz.ipynb          # Main portfolio optimization notebook
 ├── database/
 │   ├── init.sh                    # Database initialization script
 │   └── start.sh                   # Database startup script
 ├── figures/                       # Generated visualization outputs
 ├── fetch_tickers.py              # Script to fetch ticker data
-└── build_database.py             # Script to build and populate database
+├── build_database.py             # Script to build and populate database
+└── tickers.csv                   # CSV file containing ticker information
 ```
 
 ## Key Parameters
@@ -89,7 +90,7 @@ src/
 - **YEARS**: Historical data period (default: 7 years)
 - **MAX_WEIGHT**: Maximum weight per asset (default: 30%)
 - **RISK_FREE_ANNUAL**: Risk-free rate for Sharpe ratio calculation (default: 2.2% based on fonds en euro)
-- **Monte Carlo simulations**: 10M+ portfolio combinations for efficient frontier exploration
+- **Monte Carlo simulations**: 5M portfolio combinations for efficient frontier exploration
 
 ## License
 
