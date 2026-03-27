@@ -1,98 +1,100 @@
 # Portfolio Optimizer - PREVI-OPTIONS
 
-This repository contains a Python-based portfolio optimization tool leveraging the Markowitz Modern Portfolio Theory (MPT). It connects to a PostgreSQL database to fetch historical asset data, performs data cleaning and transformation, and then optimizes portfolio weights to maximize the Sharpe Ratio under specified constraints.
+A Python portfolio optimisation tool based on Modern Portfolio Theory (Markowitz MPT). Fetches historical OPCVM fund data from a TimescaleDB database, estimates optimal portfolio weights (Max Sharpe and Min Variance), and validates the strategies with a walk-forward out-of-sample backtest.
 
 ## Features
 
-*   **Data Ingestion:** Connects to a PostgreSQL database to retrieve historical `close` prices and `ticker` information for various assets.
+*   **Data Ingestion:** Scrapes available OPCVM tickers from Previ-Options, resolves them via `yfinance`, and stores OHLC history in TimescaleDB.
 *   **Data Preparation:**
-    *   Filters data to a specified historical period (e.g., last X years).
-    *   Handles missing values by dropping assets or dates with insufficient data.
-    *   Calculates daily returns, mean returns, and the covariance matrix.
-    *   Applies regularization to the covariance matrix for numerical stability.
-*   **Markowitz Optimization:**
-    *   Implements the Markowitz MPT to find optimal asset weights.
-    *   Maximizes the Sharpe Ratio (risk-adjusted return).
-    *   Supports "long-only" constraints (weights between 0 and 1) and a sum-to-one constraint.
-    *   Filters out assets with insignificant optimal weights (e.g., < 1%).
-*   **Performance Analysis:**
-    *   Calculates and displays the portfolio's annualized geometric return over the specified period.
-    *   Computes the portfolio's annualized Sharpe Ratio, annualized return, and volatility.
-*   **Visualization:** 
-    *   Matplotlib scatter plots showing portfolio optimization results
-    *   Efficient frontier visualization
-    *   Portfolio value over time analysis
-    *   Monte Carlo simulation results with 5M portfolio combinations
+    *   Filters the universe to a configurable historical window (default: 5-10 years).
+    *   Drops assets with insufficient data coverage.
+    *   Computes daily log-returns and a Ledoit-Wolf shrinkage covariance matrix.
+*   **Markowitz Optimisation:**
+    *   Maximises the Sharpe ratio (Tangency portfolio) and minimises portfolio variance.
+    *   Monte Carlo simulation for frontier visualisation.
+*   **Walk-Forward Backtest:**
+    *   Expanding-window re-optimisation with proportional transaction costs.
+    *   Compares Max Sharpe vs Min Variance strategies out-of-sample.
+*   **Visualisation:**
+    *   Efficient frontier with Capital Market Line and Tangency/Min-Var points.
+    *   Strategy comparison module showing multiple equity curves and grouped Sharpe bar charts.
 
 ## Results
 
-![Portfolio frontier](https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS/blob/main/src/figures/markovitz_portfolio_frontier.png)
+![Portfolio frontier](https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS/blob/main/src/figures/markowitz_portfolio_frontier.png)
 
-![Portfolio value and daily returns](https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS/blob/main/src/figures/markovitz_portfolio_value_and_returns.png)
+![Strategy Comparison](https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS/blob/main/src/figures/strategy_comparison.png)
 
 ## Setup and Installation
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/PortfolioOptimizer-PREVI-OPTIONS.git
+    git clone https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS.git
     cd PortfolioOptimizer-PREVI-OPTIONS
     ```
-2.  **Set up a uv project:**
+2.  **Set up the project:**
     ```bash
     uv sync
     ```
 3.  **Database Setup:**
     *   **Start TimescaleDB (PostgreSQL) using Docker:**
         ```bash
-        # Pull the TimescaleDB Docker image (if not already pulled)
-        ./src/database/init.sh
-        # Start the Docker container
-        ./src/database/start.sh
+        sh src/database/init.sh
+        sh src/database/start.sh
         ```
-        This will start a PostgreSQL instance with TimescaleDB extension on port `5432` with user `postgres` and password `password`.
+        This starts a PostgreSQL instance with TimescaleDB on port `5432` (user `postgres`, password `password`).
     *   **Populate the database:**
-        Run the `fetch_tickers.py` and `build_database.py` script to create the `opcvm_data` table and insert historical asset data (from `tickers.csv` via `yfinance`).
         ```bash
         cd src
-        uv run fetch_tickers.py
-        uv run build_database.py
+        uv run python build_database.py          # incremental update
+        uv run python build_database.py --rebuild # full re-scrape
         ```
 
 ## Usage
 
-The core logic is implemented in a Jupyter Notebook: `src/notebook/1_markovitz.ipynb`.
+```bash
+cd src
+uv run python run_analysis.py
+```
 
-The notebook includes:
-- Data loading and cleaning from TimescaleDB
-- Monte Carlo simulation with 5M portfolio combinations
-- Markowitz optimization using scipy.optimize
-- Efficient frontier calculation
-- Visualizations with Matplotlib
-- Portfolio performance analysis over time
+This runs the full pipeline: data loading → optimisation → backtest → plots saved to `src/figures/`.
 
 ## Project Structure
 
 ```
-src/
-├── notebook/
-│   └── 1_markovitz.ipynb          # Main portfolio optimization notebook
-├── database/
-│   ├── init.sh                    # Database initialization script
-│   └── start.sh                   # Database startup script
-├── figures/                       # Generated visualization outputs
-├── fetch_tickers.py              # Script to fetch ticker data
-├── build_database.py             # Script to build and populate database
-└── tickers.csv                   # CSV file containing ticker information
+.
+├── pyproject.toml       # Python dependencies (managed by uv)
+├── README.md            # This documentation file
+├── src/
+│   ├── config.py             # Centralised constants and paths
+│   ├── markowitz.py          # Data loading, transforms, optimisation, backtest
+│   ├── plots.py              # Frontier and backtest visualisation
+│   ├── run_analysis.py       # Main CLI pipeline entrypoint
+│   ├── build_database.py     # Ticker scraping and database population
+│   ├── tickers.csv           # Cached ticker list
+│   ├── database/             # PostgreSQL/TimescaleDB setup scripts
+│   │   ├── init.sh           # Docker image pull
+│   │   └── start.sh          # Docker container start
+│   └── figures/              # Generated plot outputs (gitignored)
+└── tests/
+    └── test_markowitz.py     # Unit tests (synthetic data, no DB needed)
 ```
 
 ## Key Parameters
 
-- **YEARS**: Historical data period (default: 7 years)
-- **MAX_WEIGHT**: Maximum weight per asset (default: 30%)
-- **RISK_FREE_ANNUAL**: Risk-free rate for Sharpe ratio calculation (default: 2.2% based on fonds en euro)
-- **Monte Carlo simulations**: 5M portfolio combinations for efficient frontier exploration
+All configurable in `src/config.py`:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `YEARS` | 6 | Historical data window (years) |
+| `MIN_DATA_FILL_RATIO` | 0.95 | Minimum fraction of data coverage |
+| `MAX_WEIGHT` | 1.0 | Maximum weight per asset |
+| `RISK_FREE_ANNUAL` | 1.93% | Risk-free rate (€STR) |
+| `MC_SAMPLES` | 200,000 | Monte Carlo portfolio samples |
+| `REBAL_DAYS` | 126 | Trading days between rebalances |
+| `MIN_TRAIN_DAYS` | 504 | Minimum training window (~2 years) |
+| `TRANSACTION_COST` | 1.0% | Proportional cost on portfolio turnover |
 
 ## License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
-
