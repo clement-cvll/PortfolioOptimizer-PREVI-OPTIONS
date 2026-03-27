@@ -46,7 +46,7 @@ A Python portfolio optimisation tool based on Modern Portfolio Theory (Markowitz
     *   **Populate the database:**
         ```bash
         cd src
-        uv run python build_database.py          # incremental update
+        uv run python build_database.py           # incremental update
         uv run python build_database.py --rebuild # full re-scrape
         ```
 
