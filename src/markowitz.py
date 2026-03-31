@@ -1,14 +1,11 @@
-"""Markowitz portfolio optimisation — data loading, transforms, and solvers."""
+"""Markowitz portfolio optimisation — transforms, solvers, and backtests."""
 
-import os
 from dataclasses import dataclass
 
-import duckdb
 import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 from sklearn.covariance import LedoitWolf
-from sqlalchemy import Engine
 
 # ── Data classes ──────────────────────────────────────────────────────────────
 
@@ -31,78 +28,6 @@ class BacktestResult:
     oos_returns: pd.Series
     period_sharpes: list[float]
     rebal_dates: list[pd.Timestamp]
-
-
-# ── Data Loading ──────────────────────────────────────────────────────────────
-
-
-def load_prices(
-    engine: Engine | None,
-    *,
-    years: int,
-    annual_factor: int = 252,
-    fill_ratio: float = 0.94,
-    parquet_dir: str | None = None,
-    ticker_meta_path: str | None = None,
-) -> tuple[pd.DataFrame, pd.Series]:
-    """Load close prices, pivot, and filter the universe.
-
-    Returns (prices DataFrame, ticker→name Series).
-    """
-    df: pd.DataFrame
-    ticker_names: pd.Series
-
-    if parquet_dir and os.path.exists(parquet_dir):
-        glob = os.path.join(parquet_dir, "**", "*.parquet")
-        con = duckdb.connect(database=":memory:")
-        try:
-            max_date = con.execute(
-                "SELECT max(date) FROM read_parquet(?, hive_partitioning=1)",
-                [glob],
-            ).fetchone()[0]
-            if max_date is None:
-                raise RuntimeError(f"No data found under parquet_dir={parquet_dir!r}")
-
-            df = con.execute(
-                """
-                SELECT date, ticker, close
-                FROM read_parquet(?, hive_partitioning=1)
-                WHERE date >= (?::DATE - (? * INTERVAL '1 year'))
-                """,
-                [glob, max_date, years],
-            ).df()
-        finally:
-            con.close()
-
-        df["date"] = pd.to_datetime(df["date"])
-        df["ticker"] = df["ticker"].astype(str).astype("category")
-        df["close"] = pd.to_numeric(df["close"], errors="coerce").astype(np.float64)
-
-        if not ticker_meta_path or not os.path.exists(ticker_meta_path):
-            ticker_names = pd.Series(dtype=object)
-        else:
-            meta = pd.read_parquet(ticker_meta_path)
-            ticker_names = meta.set_index("ticker")["name"]
-
-    else:
-        if engine is None:
-            raise ValueError(
-                "Provide parquet_dir (preferred) or pass a SQLAlchemy engine "
-                "for legacy DB mode."
-            )
-        df = pd.read_sql(
-            "SELECT date, close, ticker, name FROM opcvm_data ORDER BY date ASC",
-            engine,
-        )
-        df["date"] = pd.to_datetime(df["date"])
-        df["close"] = pd.to_numeric(df["close"], errors="coerce").astype(np.float64)
-        ticker_names = df.groupby("ticker")["name"].first()
-
-    price_df = df.pivot(index="date", columns="ticker", values="close")
-    min_obs = annual_factor * years
-    prices = price_df.sort_index().tail(min_obs)
-    prices = prices.dropna(axis=1, thresh=int(fill_ratio * min_obs)).dropna(axis=0)
-    return prices, ticker_names
 
 
 # ── Transforms ────────────────────────────────────────────────────────────────
@@ -173,15 +98,24 @@ def max_sharpe(
     max_weight: float = 1.0,
     annual_factor: int = 252,
     risk_free: float = 0.0193,
+    prev_weights: np.ndarray | None = None,
+    turnover_penalty: float = 0.0,
 ) -> OptimResult:
     """Tangency (max Sharpe) portfolio via SLSQP, long-only."""
     x0, bounds, eq = _optim_setup(n_assets, max_weight)
+
+    prev = np.zeros(n_assets) if prev_weights is None else prev_weights
+    lam = float(turnover_penalty)
+
+    def obj(w: np.ndarray) -> float:
+        sharpe = portfolio_stats(
+            w, mu, cov, annual_factor=annual_factor, risk_free=risk_free
+        )[2]
+        turnover = np.abs(w - prev).sum()
+        return float(-sharpe + lam * turnover)
+
     res = minimize(
-        lambda w: (
-            -portfolio_stats(
-                w, mu, cov, annual_factor=annual_factor, risk_free=risk_free
-            )[2]
-        ),
+        obj,
         x0,
         method="SLSQP",
         constraints=[eq],
@@ -200,11 +134,22 @@ def min_variance(
     n_assets: int,
     max_weight: float = 1.0,
     annual_factor: int = 252,
+    prev_weights: np.ndarray | None = None,
+    turnover_penalty: float = 0.0,
 ) -> np.ndarray:
     """Minimum-variance portfolio (ignoring expected returns)."""
     x0, bounds, eq = _optim_setup(n_assets, max_weight)
+
+    prev = np.zeros(n_assets) if prev_weights is None else prev_weights
+    lam = float(turnover_penalty)
+
+    def obj(w: np.ndarray) -> float:
+        vol = np.sqrt(w @ cov @ w) * np.sqrt(annual_factor)
+        turnover = np.abs(w - prev).sum()
+        return float(vol + lam * turnover)
+
     res = minimize(
-        lambda w: np.sqrt(w @ cov @ w) * np.sqrt(annual_factor),
+        obj,
         x0,
         method="SLSQP",
         constraints=[eq],
@@ -281,13 +226,13 @@ def walk_forward_backtest(
     max_weight: float = 1.0,
     annual_factor: int = 252,
     risk_free: float = 0.0193,
+    turnover_penalty: float = 0.0,
     rebal_days: int = 126,
     min_train_days: int = 504,
     transaction_cost: float = 0.0,
 ) -> BacktestResult:
     """Expanding-window backtest. strategy can be 'max_sharpe' or 'min_variance'."""
     n_assets = log_returns.shape[1]
-    x0, bounds, eq = _optim_setup(n_assets, max_weight)
     prev_weights = np.zeros(n_assets)
 
     period_returns: list[pd.Series] = []
@@ -303,35 +248,34 @@ def walk_forward_backtest(
         cov_wf = LedoitWolf().fit(train_lr.values).covariance_
 
         if strategy == "max_sharpe":
-
-            def obj(
-                w: np.ndarray, m: np.ndarray = mu_wf, c: np.ndarray = cov_wf
-            ) -> float:
-                num = m @ w * annual_factor - risk_free
-                den = np.sqrt(w @ c @ w) * np.sqrt(annual_factor) + 1e-12
-                return float(-(num / den))
+            weights = max_sharpe(
+                mu_wf,
+                cov_wf,
+                n_assets=n_assets,
+                max_weight=max_weight,
+                annual_factor=annual_factor,
+                risk_free=risk_free,
+                prev_weights=prev_weights,
+                turnover_penalty=turnover_penalty,
+            ).weights
         else:
-
-            def obj(w: np.ndarray, c: np.ndarray = cov_wf) -> float:
-                return float(np.sqrt(w @ c @ w) * np.sqrt(annual_factor))
-
-        res = minimize(
-            obj,
-            x0,
-            method="SLSQP",
-            constraints=[eq],
-            bounds=bounds,
-        )
-        if not res.success:
-            continue
+            weights = min_variance(
+                mu_wf,
+                cov_wf,
+                n_assets=n_assets,
+                max_weight=max_weight,
+                annual_factor=annual_factor,
+                prev_weights=prev_weights,
+                turnover_penalty=turnover_penalty,
+            )
 
         # log-returns → simple returns for P&L accumulation
-        period_ret = (np.exp(test_lr) - 1) @ res.x
+        period_ret = (np.exp(test_lr) - 1) @ weights
 
         # Deduct transaction cost (proportional to turnover) on first day
-        turnover = np.abs(res.x - prev_weights).sum()
+        turnover = np.abs(weights - prev_weights).sum()
         period_ret.iloc[0] -= transaction_cost * turnover
-        prev_weights = res.x.copy()
+        prev_weights = weights.copy()
 
         period_returns.append(period_ret)
         rebal_dates.append(test_lr.index[0])

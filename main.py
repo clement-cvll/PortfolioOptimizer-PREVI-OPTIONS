@@ -1,9 +1,12 @@
-"""Project entrypoint: build/update data then run analysis.
+"""Full pipeline: refresh Parquet data (unless skipped), then run analysis.
 
-Usage examples:
-    uv run python main.py                 # update data (if present) + run analysis
-    uv run python main.py --rebuild       # full rebuild + run analysis
-    uv run python main.py --skip-ingest   # run analysis only (expects data exists)
+From the repository root, after ``uv sync``:
+
+- ``uv run main.py`` — update or build data, then optimise and plot
+- ``uv run main.py --rebuild`` — re-scrape tickers and rebuild Parquet, then analyse
+- ``uv run main.py --skip-ingest`` — analysis only (expects data under ``src/data/``)
+
+Same behaviour: ``uv run previ-options`` (console script).
 """
 
 from __future__ import annotations
@@ -21,7 +24,9 @@ def _ensure_src_on_path() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Update Parquet data (optional), then run Markowitz analysis.",
+    )
     parser.add_argument(
         "--rebuild",
         action="store_true",
@@ -39,8 +44,6 @@ def main() -> None:
     if not args.skip_ingest:
         import build_database
 
-        # Reuse the module's CLI behavior by calling its main().
-        # It reads sys.argv via argparse, so we call it with a minimal argv tweak.
         old_argv = sys.argv[:]
         try:
             sys.argv = ["build_database.py"] + (["--rebuild"] if args.rebuild else [])

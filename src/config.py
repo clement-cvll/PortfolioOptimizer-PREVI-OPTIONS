@@ -39,6 +39,7 @@ MC_SEED: int = 42
 REBAL_DAYS: int = 126  # rebalance every rebalance period
 MIN_TRAIN_DAYS: int = 504  # minimum days before first rebalance
 TRANSACTION_COST: float = 0.01  # 1% proportional cost on turnover
+TURNOVER_PENALTY: float = 0.05  # soft penalty on |w - w_prev| during optimisation
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SRC_DIR: str = os.path.dirname(os.path.abspath(__file__))

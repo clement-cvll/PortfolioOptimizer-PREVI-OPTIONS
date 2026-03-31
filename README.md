@@ -1,93 +1,107 @@
-# Portfolio Optimizer - PREVI-OPTIONS
+# Portfolio Optimizer — PREVI-OPTIONS
 
-A Python portfolio optimisation tool based on Modern Portfolio Theory (Markowitz MPT). Fetches historical OPCVM fund data from a local Parquet dataset (queried via DuckDB), estimates optimal portfolio weights (Max Sharpe and Min Variance), and validates the strategies with a walk-forward out-of-sample backtest.
+This is a **personal project**: a small Python playground around Markowitz-style portfolio optimisation on OPCVM funds listed in Previ-Options. I built it to learn and experiment with real data.
 
-## Features
+It pulls historical prices into a **local Parquet** store (read with **DuckDB**), fits **max Sharpe** and **min variance** portfolios, and tests them with an **out-of-sample** walk-forward backtest. Everything runs locally.
 
-*   **Data Ingestion:** Scrapes available OPCVM tickers from Previ-Options, resolves them via `yfinance`, and stores OHLC history as a partitioned Parquet dataset.
-*   **Data Preparation:**
-    *   Filters the universe to a configurable historical window (default: 5-10 years).
-    *   Drops assets with insufficient data coverage.
-    *   Computes daily log-returns and a Ledoit-Wolf shrinkage covariance matrix.
-*   **Markowitz Optimisation:**
-    *   Maximises the Sharpe ratio (Tangency portfolio) and minimises portfolio variance.
-    *   Monte Carlo simulation for frontier visualisation.
-*   **Walk-Forward Backtest:**
-    *   Expanding-window re-optimisation with proportional transaction costs.
-    *   Compares Max Sharpe vs Min Variance strategies out-of-sample.
-*   **Visualisation:**
-    *   Efficient frontier with Capital Market Line and Tangency/Min-Var points.
-    *   Strategy comparison module showing multiple equity curves and grouped Sharpe bar charts.
+## What it does
 
-## Results
+- **Data:** Scrapes the Previ-Options universe, resolves tickers with `yfinance`, and saves partitioned Parquet under `src/data/` (metadata and incremental updates included).
+- **Prep:** You can easily adjust how much price history to include, filter out assets with too little data, calculate log-returns, and apply a Ledoit–Wolf covariance shrinkage. All of these options are configurable in [`src/config.py`](src/config.py).
+- **Optimisation:** Tangency (max Sharpe) and minimum variance, plus a Monte Carlo cloud for the frontier chart.
+- **Backtest:** Expanding window, with optional **turnover penalty** and **transaction costs** so results aren’t totally naive.
+- **Plots:** One combined figure (`portfolio_report.png`): frontier, equity curves, and per-period Sharpe bars.
 
-![Portfolio frontier](https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS/blob/main/src/figures/markowitz_portfolio_frontier.png)
+## Quick start (everything in one go)
 
-![Strategy Comparison](https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS/blob/main/src/figures/strategy_comparison.png)
+From the **repository root** (after [uv](https://docs.astral.sh/uv/) is installed):
 
-## Setup and Installation
+```bash
+git clone https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS.git
+cd PortfolioOptimizer-PREVI-OPTIONS
+uv sync
+uv run main.py
+```
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS.git
-    cd PortfolioOptimizer-PREVI-OPTIONS
-    ```
-2.  **Set up the project:**
-    ```bash
-    uv sync
-    ```
-3.  **Data store (DuckDB + Parquet):**
-    *   **Build or update the local Parquet dataset:**
-        ```bash
-        cd src
-        uv run python build_database.py           # incremental update
-        uv run python build_database.py --rebuild # full re-scrape
-        ```
+That installs dependencies, **updates or builds** the local Parquet dataset (network needed the first time), then runs optimisation, backtests, and saves figures. Equivalent commands: `uv run python main.py` or `uv run previ-options`.
 
-## Usage
+**Flags:**
+
+| Command | What it does |
+|---------|----------------|
+| `uv run main.py` | Incremental data update (if you already have data), then full analysis |
+| `uv run main.py --rebuild` | Re-scrape tickers and rebuild Parquet from scratch, then analysis |
+| `uv run main.py --skip-ingest` | Skip downloading/updating data; analysis only (expects `src/data/` to be populated) |
+
+**Outputs:** `src/figures/portfolio_report.png` and a short summary in the terminal.
+
+### Advanced (optional)
+
+To run only the data step or only the analysis CLI:
 
 ```bash
 cd src
-uv run python run_analysis.py
+uv run python build_database.py           # incremental ingest
+uv run python build_database.py --rebuild   # full re-scrape
+uv run python run_analysis.py             # analysis only (same as main with --skip-ingest)
 ```
 
-This runs the full pipeline: data loading → optimisation → backtest → plots saved to `src/figures/`.
+## Configuration
 
-## Project Structure
+Paths and knobs live in [`src/config.py`](src/config.py). You can override data locations with environment variables, for example:
+
+| Variable | Role |
+|----------|------|
+| `PORTFOLIO_DATA_DIR` | Base directory for generated data (default: `src/data`) |
+| `PORTFOLIO_PARQUET_DIR` | Parquet dataset root |
+| `PORTFOLIO_TICKER_META_PATH` | `ticker` → `name` metadata |
+| `PORTFOLIO_LAST_DATES_PATH` | Incremental ingest state |
+
+### Key parameters (defaults in `config.py`)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `YEARS` | 6 | History window (years of trading days) |
+| `MIN_DATA_FILL_RATIO` | 0.95 | Minimum coverage per asset |
+| `MAX_WEIGHT` | 1.0 | Upper bound per asset |
+| `RISK_FREE_ANNUAL` | 1.93% | Risk-free (€STR) |
+| `MC_SAMPLES` | 500,000 | Monte Carlo samples for frontier cloud |
+| `REBAL_DAYS` | 126 | Days between rebalances |
+| `MIN_TRAIN_DAYS` | 504 | Minimum training length before first rebalance |
+| `TRANSACTION_COST` | 1.0% | Cost applied to turnover at rebalance |
+| `TURNOVER_PENALTY` | 0.05 | Soft penalty on L1 turnover vs previous weights in the optimiser |
+
+## Project layout
 
 ```
 .
-├── pyproject.toml       # Python dependencies (managed by uv)
-├── README.md            # This documentation file
+├── main.py                 # Root entry: optional ingest + run_analysis
+├── pyproject.toml
+├── README.md
 ├── src/
-│   ├── config.py             # Centralised constants and paths
-│   ├── markowitz.py          # Data loading, transforms, optimisation, backtest
-│   ├── plots.py              # Frontier and backtest visualisation
-│   ├── run_analysis.py       # Main CLI pipeline entrypoint
-│   ├── build_database.py     # Ticker scraping and Parquet dataset builder
-│   ├── tickers.csv           # Cached ticker list
-│   ├── data/                 # Local Parquet + metadata (generated)
-│   └── figures/              # Generated plot outputs (gitignored)
+│   ├── config.py
+│   ├── data.py             # DuckDB + Parquet price load
+│   ├── markowitz.py        # Returns, optimisation, walk-forward backtest
+│   ├── plots.py            # Combined report figure
+│   ├── run_analysis.py     # Pipeline CLI
+│   ├── build_database.py   # Scrape + Parquet ingest
+│   ├── tickers.csv         # Cached universe (optional)
+│   ├── data/               # Generated Parquet + metadata (gitignored)
+│   └── figures/            # Generated plots (gitignored)
 └── tests/
-    ├── test_markowitz.py     # Unit tests (synthetic data, no network)
-    └── test_data_layer.py    # Offline tests for Parquet/DuckDB data loading
+    ├── test_markowitz.py
+    ├── test_data_layer.py
+    └── test_turnover_penalty.py
 ```
 
-## Key Parameters
+## Development
 
-All configurable in `src/config.py`:
-
-| Parameter | Default | Description |
-|---|---|---|
-| `YEARS` | 6 | Historical data window (years) |
-| `MIN_DATA_FILL_RATIO` | 0.95 | Minimum fraction of data coverage |
-| `MAX_WEIGHT` | 1.0 | Maximum weight per asset |
-| `RISK_FREE_ANNUAL` | 1.93% | Risk-free rate (€STR) |
-| `MC_SAMPLES` | 200,000 | Monte Carlo portfolio samples |
-| `REBAL_DAYS` | 126 | Trading days between rebalances |
-| `MIN_TRAIN_DAYS` | 504 | Minimum training window (~2 years) |
-| `TRANSACTION_COST` | 1.0% | Proportional cost on portfolio turnover |
+```bash
+uv run ruff check .
+uv run ruff format .
+uv run pytest
+```
 
 ## License
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+Apache License 2.0 — see [LICENSE](LICENSE).

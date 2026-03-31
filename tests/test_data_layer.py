@@ -3,7 +3,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from markowitz import load_prices
+from data import load_prices_parquet
 
 
 def _write_partitioned_parquet(base_dir: str, df: pd.DataFrame, *, ts: int = 1) -> None:
@@ -35,13 +35,12 @@ def test_load_prices_from_parquet_basic(tmp_path) -> None:
     meta = pd.DataFrame({"ticker": ["AAA", "BBB"], "name": ["Fund A", "Fund B"]})
     meta.to_parquet(meta_path, index=False)
 
-    prices, ticker_names = load_prices(
-        None,
+    prices, ticker_names = load_prices_parquet(
         years=1,
         annual_factor=20,
         fill_ratio=0.9,
-        parquet_dir=str(parquet_dir),
         ticker_meta_path=str(meta_path),
+        parquet_dir=str(parquet_dir),
     )
 
     assert list(prices.columns) == ["AAA", "BBB"]
@@ -76,13 +75,12 @@ def test_load_prices_fill_ratio_drops_sparse(tmp_path) -> None:
     meta = pd.DataFrame({"ticker": ["AAA", "BBB"], "name": ["Fund A", "Fund B"]})
     meta.to_parquet(meta_path, index=False)
 
-    prices, _ = load_prices(
-        None,
+    prices, _ = load_prices_parquet(
         years=1,
         annual_factor=30,
         fill_ratio=0.9,
-        parquet_dir=str(parquet_dir),
         ticker_meta_path=str(meta_path),
+        parquet_dir=str(parquet_dir),
     )
 
     assert "AAA" in prices.columns
