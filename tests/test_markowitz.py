@@ -26,7 +26,7 @@ from markowitz import (
 def synthetic_prices() -> pd.DataFrame:
     """200 days of prices for 3 assets with distinct drift & volatility."""
     rng = np.random.default_rng(123)
-    n_days, n_assets = 200, 3
+    n_days = 200
     # daily simple returns: asset 0 steady, asset 1 volatile, asset 2 negative
     daily = np.column_stack(
         [
@@ -139,7 +139,7 @@ class TestMinVariance:
 
 class TestEfficientFrontier:
     def test_monotonic_vol(self, mu_cov: tuple[np.ndarray, np.ndarray]) -> None:
-        """On the efficient frontier, volatility should be non-decreasing with return."""
+        """Frontier volatility should be non-decreasing with return."""
         mu, cov = mu_cov
         f_vols, f_rets = efficient_frontier(mu, cov, n_assets=3, n_points=30)
         assert len(f_vols) > 5, "Should have enough converged points"

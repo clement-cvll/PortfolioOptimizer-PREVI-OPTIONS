@@ -1,9 +1,10 @@
 """Visualisation helpers for the Markowitz portfolio optimiser."""
 
 import os
-import numpy as np
-import matplotlib.pyplot as plt
+
 import matplotlib.colors as mcolors
+import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.ticker import PercentFormatter
 
@@ -22,14 +23,19 @@ def plot_frontier(
     risk_free: float = 0.0193,
     figures_dir: str | None = None,
 ) -> Figure:
-    """MC scatter + efficient frontier + CML + tangency & min-var points."""
+    """MC cloud + efficient frontier + CML + tangency & min-var points."""
     plt.style.use("seaborn-v0_8-whitegrid")
 
-    visible = np.where((mc_returns > -0.02) & (mc_vols < frontier_vols.max() * 1.2))[0]
-    
+    mask = (mc_returns > -0.02) & (mc_vols < frontier_vols.max() * 1.2)
+    visible = np.where(mask)[0]
+    if len(visible) == 0:
+        raise ValueError(
+            "No Monte Carlo points are within the visible plotting window."
+        )
+
     s_min = float(mc_sharpes[visible].min())
     s_max = float(mc_sharpes[visible].max())
-    
+
     norm = mcolors.TwoSlopeNorm(
         vmin=min(s_min, -0.001),
         vcenter=0,
@@ -38,17 +44,38 @@ def plot_frontier(
 
     fig, ax = plt.subplots(figsize=(14, 7))
 
-    sc = ax.scatter(
-        mc_vols[visible],
-        mc_returns[visible],
-        c=mc_sharpes[visible],
-        cmap="Greens",
-        norm=norm,
-        s=4,
-        alpha=0.25,
-        rasterized=True,
-        zorder=2,
-    )
+    # Large scatters are slow. Use a binned view for big Monte Carlo runs.
+    v_vols = mc_vols[visible]
+    v_rets = mc_returns[visible]
+    v_sharpes = mc_sharpes[visible]
+    if len(visible) >= 150_000:
+        hb = ax.hexbin(
+            v_vols,
+            v_rets,
+            C=v_sharpes,
+            reduce_C_function=np.mean,
+            gridsize=200,
+            cmap="Greens",
+            norm=norm,
+            mincnt=1,
+            linewidths=0,
+            alpha=0.95,
+            zorder=2,
+        )
+        mappable = hb
+    else:
+        sc = ax.scatter(
+            v_vols,
+            v_rets,
+            c=v_sharpes,
+            cmap="Greens",
+            norm=norm,
+            s=5,
+            alpha=0.25,
+            rasterized=True,
+            zorder=2,
+        )
+        mappable = sc
     ax.plot(
         frontier_vols,
         frontier_rets,
@@ -78,7 +105,10 @@ def plot_frontier(
         s=280,
         marker="*",
         zorder=6,
-        label=f"Tangency  |  {tangency.ret:.1%} ret  |  {tangency.vol:.1%} vol  |  SR {tangency.sharpe:.2f}",
+        label=(
+            f"Tangency  |  {tangency.ret:.1%} ret  |  {tangency.vol:.1%} vol  |  "
+            f"SR {tangency.sharpe:.2f}"
+        ),
     )
 
     if min_var:
@@ -90,10 +120,13 @@ def plot_frontier(
             marker="o",
             edgecolor="white",
             zorder=6,
-            label=f"Min Var  |  {min_var.ret:.1%} ret  |  {min_var.vol:.1%} vol  |  SR {min_var.sharpe:.2f}",
+            label=(
+                f"Min Var  |  {min_var.ret:.1%} ret  |  {min_var.vol:.1%} vol  |  "
+                f"SR {min_var.sharpe:.2f}"
+            ),
         )
 
-    fig.colorbar(sc, ax=ax, pad=0.02, fraction=0.03).set_label(
+    fig.colorbar(mappable, ax=ax, pad=0.02, fraction=0.03).set_label(
         "Sharpe Ratio", fontsize=11
     )
     ax.xaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
@@ -138,8 +171,10 @@ def plot_backtest(
         pv.index, 1, pv, where=pv < 1, color="#e63946", alpha=0.12, zorder=2
     )
     ax0.axhline(1, color="black", linewidth=0.8, alpha=0.4)
-    for d in result.rebal_dates:
-        ax0.axvline(d, color="#9E9E9E", linewidth=0.8, linestyle=":", alpha=0.7)
+    # Too many vertical lines slows rendering; cap for readability/perf.
+    if len(result.rebal_dates) <= 60:
+        for d in result.rebal_dates:
+            ax0.axvline(d, color="#9E9E9E", linewidth=0.8, linestyle=":", alpha=0.7)
     ax0.set_title(
         "Walk-Forward Backtest — Out-of-Sample Equity Curve",
         fontsize=14,

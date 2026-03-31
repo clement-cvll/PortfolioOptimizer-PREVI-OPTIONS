@@ -1,23 +1,29 @@
-"""build_database.py — Scrape OPCVM tickers and populate the TimescaleDB database.
+"""build_database.py — Scrape OPCVM tickers and persist them as Parquet.
 
 Usage:
     python build_database.py           # incremental update
-    python build_database.py --rebuild # re-scrape tickers, drop table, rebuild from scratch
+    python build_database.py --rebuild # full re-scrape (rebuild Parquet from scratch)
 """
 
-import os
-import sys
-import requests
 import argparse
-import pandas as pd
-import yfinance as yf
-from tqdm import tqdm
-from bs4 import BeautifulSoup
-from psycopg2.extras import execute_values
-from sqlalchemy import create_engine, text
+import os
+import shutil
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from config import DB_URL, TICKERS_CSV
+import pandas as pd
+import requests
+import yfinance as yf
+from bs4 import BeautifulSoup
+from tqdm import tqdm
+
+from config import (
+    LAST_DATES_PATH,
+    PARQUET_DIR,
+    TICKER_META_PATH,
+    TICKERS_CSV,
+)
 
 MAX_WORKERS = 10
 REQUEST_TIMEOUT = 15  # seconds
@@ -83,34 +89,31 @@ def fetch_tickers() -> pd.DataFrame:
     return df
 
 
-def init_db(engine, rebuild: bool = False) -> None:
-    """Create the opcvm_data table (and hypertable) if it doesn't exist."""
-    with engine.begin() as conn:
-        if rebuild:
-            conn.execute(text("DROP TABLE IF EXISTS opcvm_data"))
-        conn.execute(
-            text("""
-            CREATE TABLE IF NOT EXISTS opcvm_data (
-                date DATE, open FLOAT, high FLOAT, low FLOAT,
-                close FLOAT, ticker TEXT, name TEXT
-            )""")
-        )
-        conn.execute(
-            text(
-                "SELECT create_hypertable('opcvm_data', 'date', if_not_exists => TRUE)"
-            )
-        )
+def _ensure_dirs() -> None:
+    os.makedirs(os.path.dirname(TICKER_META_PATH), exist_ok=True)
+    os.makedirs(PARQUET_DIR, exist_ok=True)
 
 
-def get_last_dates(engine) -> dict:
-    """Return {ticker: max_date} for all tickers in the database."""
-    with engine.connect() as conn:
-        return {
-            r[0]: r[1]
-            for r in conn.execute(
-                text("SELECT ticker, MAX(date) FROM opcvm_data GROUP BY ticker")
-            )
-        }
+def _load_last_dates() -> dict[str, object]:
+    """Load {ticker: last_date} from LAST_DATES_PATH if present."""
+    if not os.path.exists(LAST_DATES_PATH):
+        return {}
+    df = pd.read_parquet(LAST_DATES_PATH)
+    if df.empty:
+        return {}
+    df["last_date"] = pd.to_datetime(df["last_date"]).dt.date
+    return dict(zip(df["ticker"].astype(str), df["last_date"], strict=False))
+
+
+def _save_last_dates(last_dates: dict[str, object]) -> None:
+    out = (
+        pd.DataFrame(
+            {"ticker": list(last_dates.keys()), "last_date": list(last_dates.values())}
+        )
+        .sort_values("ticker")
+        .reset_index(drop=True)
+    )
+    out.to_parquet(LAST_DATES_PATH, index=False)
 
 
 def _to_records(ticker: str, name: str, hist: pd.DataFrame, last_date) -> list[tuple]:
@@ -132,22 +135,16 @@ def _to_records(ticker: str, name: str, hist: pd.DataFrame, last_date) -> list[t
     ]
 
 
-def _bulk_insert(engine, records: list[tuple]) -> None:
-    """Insert records into opcvm_data using psycopg2 execute_values."""
-    if not records:
-        return
-    conn = engine.raw_connection()
-    try:
-        with conn.cursor() as cur:
-            execute_values(
-                cur,
-                "INSERT INTO opcvm_data (date, open, high, low, close, ticker, name) VALUES %s",
-                records,
-                page_size=2000,
-            )
-        conn.commit()
-    finally:
-        conn.close()
+def _records_to_frame(records: list[tuple]) -> pd.DataFrame:
+    df = pd.DataFrame(
+        records, columns=["date", "open", "high", "low", "close", "ticker", "name"]
+    )
+    if df.empty:
+        return df
+    df["ticker"] = df["ticker"].astype(str)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+    df["year"] = pd.to_datetime(df["date"]).dt.year.astype(int)
+    return df
 
 
 def _download_and_prepare(
@@ -178,8 +175,26 @@ def _download_and_prepare(
     return records
 
 
-def ingest_all(engine, tickers_df: pd.DataFrame, last_dates: dict) -> int:
-    """Download and insert all ticker data. Returns the number of rows inserted."""
+def _write_parquet_partitioned(df: pd.DataFrame) -> int:
+    """Append by writing new Parquet files into hive partitions."""
+    if df.empty:
+        return 0
+    # Keep fact table lean: name is stored separately as metadata.
+    fact = df.drop(columns=["name"])
+    # Write each (ticker, year) group as its own file to avoid expensive merges.
+    ts = int(time.time() * 1000)
+    rows = 0
+    for (ticker, year), g in fact.groupby(["ticker", "year"], sort=False):
+        part_dir = os.path.join(PARQUET_DIR, f"ticker={ticker}", f"year={int(year)}")
+        os.makedirs(part_dir, exist_ok=True)
+        path = os.path.join(part_dir, f"part-{ts}.parquet")
+        g.drop(columns=["year"]).to_parquet(path, index=False)
+        rows += len(g)
+    return rows
+
+
+def ingest_all(tickers_df: pd.DataFrame, last_dates: dict) -> int:
+    """Download and persist all ticker data. Returns the number of rows written."""
     tickers = list(tickers_df.index)
     new = [t for t in tickers if t not in last_dates]
     existing = [t for t in tickers if t in last_dates]
@@ -191,8 +206,17 @@ def ingest_all(engine, tickers_df: pd.DataFrame, last_dates: dict) -> int:
         last_dates,
         start=str(min(last_dates[t] for t in existing)) if existing else None,
     )
-    _bulk_insert(engine, records)
-    return len(records)
+    df = _records_to_frame(records)
+    written = _write_parquet_partitioned(df)
+    if written:
+        # Update last_dates from the *newly written* batch.
+        maxes = df.groupby("ticker")["date"].max().to_dict() if not df.empty else {}
+        for t, d in maxes.items():
+            prev = last_dates.get(t)
+            if prev is None or d > prev:
+                last_dates[t] = d
+        _save_last_dates(last_dates)
+    return written
 
 
 def main() -> None:
@@ -200,10 +224,10 @@ def main() -> None:
     parser.add_argument(
         "--rebuild",
         action="store_true",
-        help="Re-scrape tickers, drop the table, and rebuild from scratch",
+        help="Re-scrape tickers and rebuild Parquet from scratch",
     )
     args = parser.parse_args()
-    engine = create_engine(DB_URL)
+    _ensure_dirs()
 
     if args.rebuild or not os.path.exists(TICKERS_CSV):
         tickers_df = fetch_tickers()
@@ -212,10 +236,27 @@ def main() -> None:
     else:
         tickers_df = pd.read_csv(TICKERS_CSV, index_col=0)
 
-    init_db(engine, rebuild=args.rebuild)
-    last_dates = {} if args.rebuild else get_last_dates(engine)
-    total = ingest_all(engine, tickers_df, last_dates)
-    print(f"Done — {total} rows inserted.")
+    if args.rebuild:
+        if os.path.exists(PARQUET_DIR):
+            shutil.rmtree(PARQUET_DIR)
+        if os.path.exists(TICKER_META_PATH):
+            os.remove(TICKER_META_PATH)
+        if os.path.exists(LAST_DATES_PATH):
+            os.remove(LAST_DATES_PATH)
+        os.makedirs(PARQUET_DIR, exist_ok=True)
+
+    # Write ticker metadata (ticker -> name)
+    meta = (
+        tickers_df.reset_index(names="ticker")[["ticker", "name"]]
+        .astype({"ticker": str, "name": str})
+        .sort_values("ticker")
+        .reset_index(drop=True)
+    )
+    meta.to_parquet(TICKER_META_PATH, index=False)
+
+    last_dates = {} if args.rebuild else _load_last_dates()
+    total = ingest_all(tickers_df, last_dates)
+    print(f"Done — {total} rows written to Parquet.")
 
 
 if __name__ == "__main__":

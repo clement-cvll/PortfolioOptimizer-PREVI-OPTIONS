@@ -5,35 +5,35 @@ Usage:
     uv run python run_analysis.py
 """
 
-import numpy as np
 import matplotlib.pyplot as plt
-from sqlalchemy import create_engine
+import numpy as np
 
 import config as cfg
 from markowitz import (
+    OptimResult,
     compute_log_returns,
     efficient_frontier,
     format_weights,
+    load_prices,
     max_sharpe,
     min_variance,
     monte_carlo,
     portfolio_stats,
     shrink_covariance,
     walk_forward_backtest,
-    load_prices,
 )
-from plots import plot_strategy_comparison, plot_frontier
-from markowitz import OptimResult
+from plots import plot_frontier, plot_strategy_comparison
 
 
 def main() -> None:
     # ── 1. Load data ──────────────────────────────────────────────────────
-    engine = create_engine(cfg.DB_URL)
     prices, ticker_names = load_prices(
-        engine,
+        None,
         years=cfg.YEARS,
         annual_factor=cfg.ANNUAL_FACTOR,
         fill_ratio=cfg.MIN_DATA_FILL_RATIO,
+        parquet_dir=cfg.PARQUET_DIR,
+        ticker_meta_path=cfg.TICKER_META_PATH,
     )
     n_assets = prices.shape[1]
     print(f"Universe: {n_assets} assets, {len(prices)} trading days")
@@ -63,7 +63,8 @@ def main() -> None:
         )
     )
     print(
-        f"  Return {tangency.ret:.2%}  Vol {tangency.vol:.2%}  Sharpe {tangency.sharpe:.2f}\n"
+        f"  Return {tangency.ret:.2%}  Vol {tangency.vol:.2%}  "
+        f"Sharpe {tangency.sharpe:.2f}\n"
     )
 
     # ── 3.5 Min-Variance optimisation ──────────────────────────────────────

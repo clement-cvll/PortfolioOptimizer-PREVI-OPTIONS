@@ -1,10 +1,10 @@
 # Portfolio Optimizer - PREVI-OPTIONS
 
-A Python portfolio optimisation tool based on Modern Portfolio Theory (Markowitz MPT). Fetches historical OPCVM fund data from a TimescaleDB database, estimates optimal portfolio weights (Max Sharpe and Min Variance), and validates the strategies with a walk-forward out-of-sample backtest.
+A Python portfolio optimisation tool based on Modern Portfolio Theory (Markowitz MPT). Fetches historical OPCVM fund data from a local Parquet dataset (queried via DuckDB), estimates optimal portfolio weights (Max Sharpe and Min Variance), and validates the strategies with a walk-forward out-of-sample backtest.
 
 ## Features
 
-*   **Data Ingestion:** Scrapes available OPCVM tickers from Previ-Options, resolves them via `yfinance`, and stores OHLC history in TimescaleDB.
+*   **Data Ingestion:** Scrapes available OPCVM tickers from Previ-Options, resolves them via `yfinance`, and stores OHLC history as a partitioned Parquet dataset.
 *   **Data Preparation:**
     *   Filters the universe to a configurable historical window (default: 5-10 years).
     *   Drops assets with insufficient data coverage.
@@ -36,14 +36,8 @@ A Python portfolio optimisation tool based on Modern Portfolio Theory (Markowitz
     ```bash
     uv sync
     ```
-3.  **Database Setup:**
-    *   **Start TimescaleDB (PostgreSQL) using Docker:**
-        ```bash
-        sh src/database/init.sh
-        sh src/database/start.sh
-        ```
-        This starts a PostgreSQL instance with TimescaleDB on port `5432` (user `postgres`, password `password`).
-    *   **Populate the database:**
+3.  **Data store (DuckDB + Parquet):**
+    *   **Build or update the local Parquet dataset:**
         ```bash
         cd src
         uv run python build_database.py           # incremental update
@@ -70,14 +64,13 @@ This runs the full pipeline: data loading → optimisation → backtest → plot
 │   ├── markowitz.py          # Data loading, transforms, optimisation, backtest
 │   ├── plots.py              # Frontier and backtest visualisation
 │   ├── run_analysis.py       # Main CLI pipeline entrypoint
-│   ├── build_database.py     # Ticker scraping and database population
+│   ├── build_database.py     # Ticker scraping and Parquet dataset builder
 │   ├── tickers.csv           # Cached ticker list
-│   ├── database/             # PostgreSQL/TimescaleDB setup scripts
-│   │   ├── init.sh           # Docker image pull
-│   │   └── start.sh          # Docker container start
+│   ├── data/                 # Local Parquet + metadata (generated)
 │   └── figures/              # Generated plot outputs (gitignored)
 └── tests/
-    └── test_markowitz.py     # Unit tests (synthetic data, no DB needed)
+    ├── test_markowitz.py     # Unit tests (synthetic data, no network)
+    └── test_data_layer.py    # Offline tests for Parquet/DuckDB data loading
 ```
 
 ## Key Parameters

@@ -2,11 +2,24 @@
 
 import os
 
-# ── Database ──────────────────────────────────────────────────────────────────
-DB_URL: str = os.getenv(
-    "PORTFOLIO_DB_URL",
-    "postgresql+psycopg2://postgres:password@localhost/postgres",
+# ── Storage (DuckDB + Parquet) ────────────────────────────────────────────────
+# Canonical store: partitioned Parquet dataset under PARQUET_DIR
+DATA_DIR: str = os.getenv(
+    "PORTFOLIO_DATA_DIR", os.path.join(os.path.dirname(__file__), "data")
 )
+PARQUET_DIR: str = os.getenv(
+    "PORTFOLIO_PARQUET_DIR", os.path.join(DATA_DIR, "opcvm_parquet")
+)
+TICKER_META_PATH: str = os.getenv(
+    "PORTFOLIO_TICKER_META_PATH", os.path.join(DATA_DIR, "ticker_meta.parquet")
+)
+LAST_DATES_PATH: str = os.getenv(
+    "PORTFOLIO_LAST_DATES_PATH", os.path.join(DATA_DIR, "last_dates.parquet")
+)
+
+# ── Legacy DB (optional) ───────────────────────────────────────────────────────
+# Only used if you explicitly set PORTFOLIO_DB_URL and run in legacy mode.
+DB_URL: str = os.getenv("PORTFOLIO_DB_URL", "")
 
 # ── Universe & History ────────────────────────────────────────────────────────
 YEARS: int = 6
