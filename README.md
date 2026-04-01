@@ -12,6 +12,8 @@ It pulls historical prices into a **local Parquet** store (read with **DuckDB**)
 - **Backtest:** Expanding window, with optional **turnover penalty** and **transaction costs** so results aren’t totally naive.
 - **Plots:** One combined figure (`portfolio_report.png`): frontier, equity curves, and per-period Sharpe bars.
 
+![Efficient frontier, OOS equity curves, metrics, and per-period Sharpe bars](assets/portfolio_report.png)
+
 ## Quick start (everything in one go)
 
 From the **repository root** (after [uv](https://docs.astral.sh/uv/) is installed):
@@ -56,6 +58,8 @@ Everything lives in [`src/config.py`](src/config.py): where data and figures go 
 
 ```
 .
+├── assets/
+│   └── portfolio_report.png   # Sample figure for this README
 ├── main.py                 # Root entry: ingest + run_analysis
 ├── pyproject.toml
 ├── README.md
