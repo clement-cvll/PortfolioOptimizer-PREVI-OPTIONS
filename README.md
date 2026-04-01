@@ -31,31 +31,12 @@ That installs dependencies, **updates or builds** the local Parquet dataset (net
 |---------|----------------|
 | `uv run main.py` | Incremental data update (if you already have data), then full analysis |
 | `uv run main.py --rebuild` | Re-scrape tickers and rebuild Parquet from scratch, then analysis |
-| `uv run main.py --skip-ingest` | Skip downloading/updating data; analysis only (expects `src/data/` to be populated) |
 
 **Outputs:** `src/figures/portfolio_report.png` and a short summary in the terminal.
 
-### Advanced (optional)
-
-To run only the data step or only the analysis CLI:
-
-```bash
-cd src
-uv run python build_database.py           # incremental ingest
-uv run python build_database.py --rebuild   # full re-scrape
-uv run python run_analysis.py             # analysis only (same as main with --skip-ingest)
-```
-
 ## Configuration
 
-Paths and knobs live in [`src/config.py`](src/config.py). You can override data locations with environment variables, for example:
-
-| Variable | Role |
-|----------|------|
-| `PORTFOLIO_DATA_DIR` | Base directory for generated data (default: `src/data`) |
-| `PORTFOLIO_PARQUET_DIR` | Parquet dataset root |
-| `PORTFOLIO_TICKER_META_PATH` | `ticker` → `name` metadata |
-| `PORTFOLIO_LAST_DATES_PATH` | Incremental ingest state |
+Everything lives in [`src/config.py`](src/config.py): where data and figures go (`src/data/`, `src/figures/` by default), risk-free rate, rebalance cadence, Monte Carlo size, and so on. Edit the file directly—no extra env setup required.
 
 ### Key parameters (defaults in `config.py`)
 
@@ -69,13 +50,13 @@ Paths and knobs live in [`src/config.py`](src/config.py). You can override data 
 | `REBAL_DAYS` | 126 | Days between rebalances |
 | `MIN_TRAIN_DAYS` | 504 | Minimum training length before first rebalance |
 | `TRANSACTION_COST` | 1.0% | Cost applied to turnover at rebalance |
-| `TURNOVER_PENALTY` | 0.05 | Soft penalty on L1 turnover vs previous weights in the optimiser |
+| `TURNOVER_PENALTY` | 0.0 | Soft penalty on L1 turnover vs previous weights in the optimiser |
 
 ## Project layout
 
 ```
 .
-├── main.py                 # Root entry: optional ingest + run_analysis
+├── main.py                 # Root entry: ingest + run_analysis
 ├── pyproject.toml
 ├── README.md
 ├── src/

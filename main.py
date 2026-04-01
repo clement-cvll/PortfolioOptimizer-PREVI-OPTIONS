@@ -1,10 +1,9 @@
-"""Full pipeline: refresh Parquet data (unless skipped), then run analysis.
+"""Full pipeline: refresh Parquet data, then run analysis.
 
 From the repository root, after ``uv sync``:
 
 - ``uv run main.py`` — update or build data, then optimise and plot
 - ``uv run main.py --rebuild`` — re-scrape tickers and rebuild Parquet, then analyse
-- ``uv run main.py --skip-ingest`` — analysis only (expects data under ``src/data/``)
 
 Same behaviour: ``uv run previ-options`` (console script).
 """
@@ -25,31 +24,25 @@ def _ensure_src_on_path() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Update Parquet data (optional), then run Markowitz analysis.",
+        description="Update Parquet data, then run Markowitz analysis.",
     )
     parser.add_argument(
         "--rebuild",
         action="store_true",
         help="Re-scrape tickers and rebuild the Parquet dataset from scratch",
     )
-    parser.add_argument(
-        "--skip-ingest",
-        action="store_true",
-        help="Skip data ingestion and only run the analysis",
-    )
     args = parser.parse_args()
 
     _ensure_src_on_path()
 
-    if not args.skip_ingest:
-        import build_database
+    import build_database
 
-        old_argv = sys.argv[:]
-        try:
-            sys.argv = ["build_database.py"] + (["--rebuild"] if args.rebuild else [])
-            build_database.main()
-        finally:
-            sys.argv = old_argv
+    old_argv = sys.argv[:]
+    try:
+        sys.argv = ["build_database.py"] + (["--rebuild"] if args.rebuild else [])
+        build_database.main()
+    finally:
+        sys.argv = old_argv
 
     import run_analysis
 

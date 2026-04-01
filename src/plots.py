@@ -12,12 +12,83 @@ from matplotlib.ticker import PercentFormatter
 from markowitz import BacktestResult, OptimResult
 
 
+def _oos_metrics(
+    bt: BacktestResult, *, annual_factor: int, risk_free: float
+) -> dict[str, float | int]:
+    """Aggregate OOS simple-return series into annualised stats and max drawdown."""
+    r = bt.oos_returns
+    n = len(r)
+    if n == 0:
+        return {
+            "ann_ret": float("nan"),
+            "ann_vol": float("nan"),
+            "sharpe": float("nan"),
+            "max_dd": float("nan"),
+            "n_days": 0,
+            "n_periods": len(bt.period_sharpes),
+        }
+    total_ret = float((1 + r).prod() - 1)
+    ann_ret = (1 + total_ret) ** (annual_factor / n) - 1
+    ann_vol = float(r.std(ddof=1) * np.sqrt(annual_factor)) if n > 1 else float("nan")
+    if ann_vol == ann_vol:
+        sharpe = (ann_ret - risk_free) / (ann_vol + 1e-12)
+    else:
+        sharpe = float("nan")
+    pv = bt.portfolio_value
+    max_dd = float((pv / pv.cummax() - 1).min())
+    return {
+        "ann_ret": float(ann_ret),
+        "ann_vol": ann_vol,
+        "sharpe": float(sharpe),
+        "max_dd": max_dd,
+        "n_days": n,
+        "n_periods": len(bt.period_sharpes),
+    }
+
+
+def _metrics_report_text(
+    *,
+    tangency: OptimResult,
+    min_var: OptimResult | None,
+    backtests: dict[str, BacktestResult],
+    annual_factor: int,
+    risk_free: float,
+) -> str:
+    lines: list[str] = [
+        "In-sample (full window, point estimates)",
+        f"  Tangency:  ret {tangency.ret:.2%}  vol {tangency.vol:.2%}  "
+        f"Sharpe {tangency.sharpe:.2f}",
+    ]
+    if min_var:
+        lines.append(
+            f"  Min var:   ret {min_var.ret:.2%}  vol {min_var.vol:.2%}  "
+            f"Sharpe {min_var.sharpe:.2f}"
+        )
+    lines.append("")
+    lines.append(
+        f"Out-of-sample (walk-forward; ann. uses {annual_factor} trading days / yr)"
+    )
+    if not backtests:
+        lines.append("  (no backtests)")
+        return "\n".join(lines)
+    for name, bt in backtests.items():
+        m = _oos_metrics(bt, annual_factor=annual_factor, risk_free=risk_free)
+        lines.append(f"  {name}:")
+        lines.append(
+            f"    ann. return {m['ann_ret']:.2%}  ann. vol {m['ann_vol']:.2%}  "
+            f"Sharpe {m['sharpe']:.2f}  max DD {m['max_dd']:.2%}"
+        )
+        lines.append(f"    OOS days {m['n_days']}  rebalance periods {m['n_periods']}")
+    return "\n".join(lines)
+
+
 def _apply_professional_style() -> None:
     plt.style.use("seaborn-v0_8-whitegrid")
     plt.rcParams.update(
         {
-            "axes.titlesize": 13,
+            "axes.titlesize": 12,
             "axes.labelsize": 11,
+            "axes.titlepad": 8,
             "legend.fontsize": 9,
             "axes.spines.top": False,
             "axes.spines.right": False,
@@ -136,6 +207,20 @@ def _plot_frontier_ax(
 def _plot_strategy_comparison_axes(
     ax_eq, ax_sh, backtests: dict[str, BacktestResult]
 ) -> None:
+    if not backtests:
+        for ax in (ax_eq, ax_sh):
+            ax.set_axis_off()
+            ax.text(
+                0.5,
+                0.5,
+                "No walk-forward backtests",
+                ha="center",
+                va="center",
+                fontsize=11,
+                transform=ax.transAxes,
+            )
+        return
+
     colors = ["#e63946", "#2196F3", "#4CAF50", "#FF9800"]
     first_bt = next(iter(backtests.values()))
 
@@ -172,10 +257,11 @@ def _plot_strategy_comparison_axes(
     ax_sh.set_xticks(x)
     ax_sh.set_xticklabels(
         [d.strftime("%b %Y") for d in first_bt.rebal_dates],
-        rotation=35,
+        rotation=30,
         ha="right",
-        fontsize=9,
+        fontsize=8,
     )
+    ax_sh.tick_params(axis="x", pad=2)
     ax_sh.set_title("Out-of-Sample Sharpe per Period")
     ax_sh.set_ylabel("Sharpe")
 
@@ -191,16 +277,28 @@ def plot_report(
     min_var: OptimResult | None,
     backtests: dict[str, BacktestResult],
     risk_free: float = 0.0193,
+    annual_factor: int = 252,
     figures_dir: str | None = None,
 ) -> Figure:
-    """Single professional report: frontier + equity curves + Sharpe bars."""
+    """Single professional report: frontier + equity curves + Sharpe bars + metrics."""
     _apply_professional_style()
 
+    # 2×2 grid: tall top row (frontier | equity), shorter bottom (metrics | Sharpe).
+    # Avoids stacked right-column titles overlapping and keeps frontier x-axis clear.
     fig = plt.figure(figsize=(16, 9))
-    gs = GridSpec(2, 2, figure=fig, width_ratios=[1.05, 1.0], height_ratios=[1.0, 1.0])
+    gs = GridSpec(
+        2,
+        2,
+        figure=fig,
+        width_ratios=[1.05, 1.0],
+        height_ratios=[2.5, 1.0],
+        hspace=0.36,
+        wspace=0.28,
+    )
 
-    ax_frontier = fig.add_subplot(gs[:, 0])
+    ax_frontier = fig.add_subplot(gs[0, 0])
     ax_eq = fig.add_subplot(gs[0, 1])
+    ax_metrics = fig.add_subplot(gs[1, 0])
     ax_sh = fig.add_subplot(gs[1, 1])
 
     mappable = _plot_frontier_ax(
@@ -220,8 +318,38 @@ def plot_report(
 
     _plot_strategy_comparison_axes(ax_eq, ax_sh, backtests)
 
-    fig.suptitle("Portfolio Optimizer Report", fontsize=16, fontweight="bold", y=0.98)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    metrics_txt = _metrics_report_text(
+        tangency=tangency,
+        min_var=min_var,
+        backtests=backtests,
+        annual_factor=annual_factor,
+        risk_free=risk_free,
+    )
+    ax_metrics.set_axis_off()
+    ax_metrics.set_xlim(0, 1)
+    ax_metrics.set_ylim(0, 1)
+    ax_metrics.text(
+        0.02,
+        0.98,
+        metrics_txt,
+        transform=ax_metrics.transAxes,
+        fontsize=11,
+        va="top",
+        ha="left",
+        family="monospace",
+        linespacing=1.22,
+        clip_on=False,
+        bbox=dict(
+            boxstyle="round,pad=0.3",
+            facecolor="#f8f9fa",
+            edgecolor="#cccccc",
+        ),
+    )
+
+    fig.suptitle(
+        "Portfolio Optimizer Report", fontsize=15, fontweight="bold", y=0.98
+    )
+    fig.tight_layout(rect=[0, 0.02, 1, 0.93])
 
     if figures_dir:
         os.makedirs(figures_dir, exist_ok=True)
@@ -243,6 +371,7 @@ def plot_frontier(
     min_var: OptimResult | None = None,
     *,
     risk_free: float = 0.0193,
+    annual_factor: int = 252,
     figures_dir: str | None = None,
 ) -> Figure:
     """Deprecated: use plot_report()."""
@@ -256,6 +385,7 @@ def plot_frontier(
         min_var=min_var,
         backtests={},
         risk_free=risk_free,
+        annual_factor=annual_factor,
         figures_dir=figures_dir,
     )
 

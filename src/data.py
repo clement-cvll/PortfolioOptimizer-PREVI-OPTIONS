@@ -55,7 +55,11 @@ def load_prices_parquet(
     price_df = df.pivot(index="date", columns="ticker", values="close")
     min_obs = annual_factor * years
     prices = price_df.sort_index().tail(min_obs)
-    prices = prices.dropna(axis=1, thresh=int(fill_ratio * min_obs)).dropna(axis=0)
+    n_rows = len(prices)
+    # Threshold must use actual row count: if history is shorter than min_obs,
+    # int(fill_ratio * min_obs) can exceed n_rows and drop every column.
+    thresh = max(1, int(fill_ratio * n_rows))
+    prices = prices.dropna(axis=1, thresh=thresh).dropna(axis=0)
 
     if not ticker_meta_path or not os.path.exists(ticker_meta_path):
         ticker_names = pd.Series(dtype=object)

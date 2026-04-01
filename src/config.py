@@ -24,7 +24,7 @@ DB_URL: str = os.getenv("PORTFOLIO_DB_URL", "")
 # ── Universe & History ────────────────────────────────────────────────────────
 YEARS: int = 6
 ANNUAL_FACTOR: int = 252  # trading days per year
-MIN_DATA_FILL_RATIO: float = 0.95  # drop assets with less coverage
+MIN_DATA_FILL_RATIO: float = 0.8  # drop assets with less coverage
 
 # ── Optimisation ──────────────────────────────────────────────────────────────
 MAX_WEIGHT: float = 1.0  # upper bound per asset (1.0 = unconstrained)
@@ -39,7 +39,7 @@ MC_SEED: int = 42
 REBAL_DAYS: int = 126  # rebalance every rebalance period
 MIN_TRAIN_DAYS: int = 504  # minimum days before first rebalance
 TRANSACTION_COST: float = 0.01  # 1% proportional cost on turnover
-TURNOVER_PENALTY: float = 0.05  # soft penalty on |w - w_prev| during optimisation
+TURNOVER_PENALTY: float = 0.00  # soft penalty on |w - w_prev| during optimisation
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SRC_DIR: str = os.path.dirname(os.path.abspath(__file__))

@@ -50,6 +50,11 @@ def main() -> None:
     )
     n_assets = prices.shape[1]
     print(f"Universe: {n_assets} assets, {len(prices)} trading days")
+    if n_assets == 0:
+        raise RuntimeError(
+            "No assets left after loading Parquet and applying MIN_DATA_FILL_RATIO. "
+            "Try lowering MIN_DATA_FILL_RATIO in config.py or shortening YEARS."
+        )
 
     log_returns = compute_log_returns(prices)
     cov_df = shrink_covariance(log_returns)
@@ -136,6 +141,7 @@ def main() -> None:
         min_var=min_var_port,
         backtests={"Max Sharpe": bt_ms, "Min Variance": bt_mv},
         risk_free=cfg.RISK_FREE_ANNUAL,
+        annual_factor=cfg.ANNUAL_FACTOR,
         figures_dir=cfg.FIGURES_DIR,
     )
     plt.show()
