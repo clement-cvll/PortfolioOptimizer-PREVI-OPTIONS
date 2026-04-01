@@ -26,16 +26,35 @@ from config import (
 )
 
 MAX_WORKERS = 10
-REQUEST_TIMEOUT = 15  # seconds
+# Previ pages can be slow; (connect, read) seconds. Retries help transient timeouts.
+_PREVI_HTTP_TIMEOUT = (15.0, 120.0)
+_PREVI_HTTP_RETRIES = 3
 
 PREVI_URL = "https://www.previ-direct.com/web/eclient-suravenir/perf-uc-previ-options"
 
 
+def _fetch_previ_html() -> bytes:
+    """GET the Previ performance page with retries."""
+    for attempt in range(_PREVI_HTTP_RETRIES):
+        try:
+            response = requests.get(PREVI_URL, timeout=_PREVI_HTTP_TIMEOUT)
+            response.raise_for_status()
+            return response.content
+        except (requests.Timeout, requests.ConnectionError) as e:
+            if attempt == _PREVI_HTTP_RETRIES - 1:
+                raise
+            wait = 2**attempt
+            print(
+                f"Previ request failed ({type(e).__name__}), retry in {wait}s…",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
+    raise RuntimeError("unreachable")
+
+
 def fetch_tickers() -> pd.DataFrame:
     """Scrape Previ-Options and return a validated {ticker → name} DataFrame."""
-    response = requests.get(PREVI_URL, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.content, "html.parser")
+    soup = BeautifulSoup(_fetch_previ_html(), "html.parser")
 
     units = [
         {"unit_isin": a1.text.strip(), "unit_name": a2.text.strip()}
@@ -57,7 +76,7 @@ def fetch_tickers() -> pd.DataFrame:
             info = t.info
             if info.get("currency") != "EUR":
                 return None
-            hist = t.history(period="10y")
+            hist = t.history(period="15y")
             if len(hist) < 252:
                 return None
             name = info.get("longName", info.get("shortName", "")).replace('"', "")
