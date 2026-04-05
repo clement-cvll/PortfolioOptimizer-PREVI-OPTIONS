@@ -13,7 +13,7 @@ LAST_DATES_PATH: str = os.path.join(DATA_DIR, "last_dates.parquet")
 # Universe & history
 YEARS: int = 6
 ANNUAL_FACTOR: int = 252
-MIN_DATA_FILL_RATIO: float = 0.8
+MIN_DATA_FILL_RATIO: float = 0.7
 
 # Optimisation
 MAX_WEIGHT: float = 1.0
@@ -23,7 +23,7 @@ WEIGHT_THRESHOLD: float = 0.01
 # Walk-forward backtest
 REBAL_DAYS: int = 126
 MIN_TRAIN_DAYS: int = 504
-TRANSACTION_COST: float = 0.01
+TRANSACTION_COST: float = 0.005
 TURNOVER_PENALTY: float = 0.00
 
 # Output paths

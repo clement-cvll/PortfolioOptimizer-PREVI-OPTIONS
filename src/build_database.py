@@ -77,7 +77,7 @@ def fetch_tickers() -> pd.DataFrame:
             info = t.info
             if info.get("currency") != "EUR":
                 return None
-            hist = t.history(period="15y")
+            hist = t.history(period="8y")
             if len(hist) < 252:
                 return None
             name = info.get("longName", info.get("shortName", ""))

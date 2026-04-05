@@ -10,6 +10,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import PercentFormatter
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.cluster.hierarchy import leaves_list, linkage
+from scipy.spatial.distance import squareform
 
 from markowitz import BacktestResult, OptimResult
 
@@ -22,9 +23,10 @@ _COLORS = {
 }
 _FRONTIER_XLIM = (0.0, 0.20)  # vol axis (fraction → %)
 _FRONTIER_YLIM = (0.0, 0.18)  # return axis
-_REPORT_FIGSIZE = (16, 10)
-_GS_MAIN = dict(hspace=0.34, wspace=0.42)
+_REPORT_FIGSIZE = (16.0, 9.0)
+_GS_MAIN = dict(hspace=0.1, wspace=0.05)
 _GS_CORR = dict(width_ratios=[0.68, 0.32], wspace=0.02)
+_SAVE_DPI = 300
 
 
 # ── Style ─────────────────────────────────────────────────────────────────────
@@ -33,10 +35,22 @@ _GS_CORR = dict(width_ratios=[0.68, 0.32], wspace=0.02)
 def _apply_style() -> None:
     plt.style.use("seaborn-v0_8-whitegrid")
     plt.rcParams.update({
-        "axes.titlesize": 12,
-        "axes.labelsize": 11,
-        "axes.titlepad": 8,
-        "legend.fontsize": 9,
+        "axes.titlesize": 13,
+        "axes.labelsize": 12,
+        "axes.titlepad": 9,
+        "legend.fontsize": 11,
+        "xtick.labelsize": 11,
+        "ytick.labelsize": 11,
+        "axes.linewidth": 1.1,
+        "xtick.major.width": 0.9,
+        "ytick.major.width": 0.9,
+        "xtick.minor.width": 0.7,
+        "ytick.minor.width": 0.7,
+        "grid.linewidth": 0.5,
+        "lines.linewidth": 1.5,
+        "lines.solid_capstyle": "round",
+        "lines.antialiased": True,
+        "patch.linewidth": 0.75,
         "axes.spines.top": False,
         "axes.spines.right": False,
     })
@@ -84,30 +98,59 @@ def _plot_frontier(
 ):
     """Efficient frontier line with CML, tangency, and min-var markers."""
     ax.plot(
-        frontier_vols, frontier_rets,
-        color=_COLORS["frontier"], linewidth=2.5, zorder=4,
+        frontier_vols,
+        frontier_rets,
+        color=_COLORS["frontier"],
+        linewidth=2.35,
+        solid_capstyle="round",
+        zorder=4,
         label="Efficient frontier",
     )
 
     x_hi = _FRONTIER_XLIM[1]
-    cml_x = np.linspace(0.0, x_hi, 50)
+    cml_x = np.linspace(0.0, x_hi, 96)
     ax.plot(
-        cml_x, risk_free + tangency.sharpe * cml_x,
-        color=_COLORS["cml"], linewidth=1.8, linestyle="--",
-        zorder=4, label="Capital Market Line",
+        cml_x,
+        risk_free + tangency.sharpe * cml_x,
+        color=_COLORS["cml"],
+        linewidth=2.0,
+        linestyle="--",
+        dash_capstyle="round",
+        zorder=4,
+        label="Capital Market Line",
     )
-    ax.scatter(0, risk_free, color=_COLORS["cml"], s=55, zorder=6)
     ax.scatter(
-        tangency.vol, tangency.ret,
-        color=_COLORS["tangency"], s=240, marker="*", zorder=6,
+        0,
+        risk_free,
+        color=_COLORS["cml"],
+        s=70,
+        zorder=6,
+        linewidths=1.0,
+        edgecolors="white",
+    )
+    ax.scatter(
+        tangency.vol,
+        tangency.ret,
+        color=_COLORS["tangency"],
+        s=260,
+        marker="*",
+        zorder=6,
+        linewidths=1.0,
+        edgecolors="white",
         label=f"Tangency (SR {tangency.sharpe:.2f})",
     )
 
     if min_var:
         ax.scatter(
-            min_var.vol, min_var.ret,
-            color=_COLORS["minvar"], s=160, marker="o",
-            edgecolor="white", zorder=6, label="Min Var",
+            min_var.vol,
+            min_var.ret,
+            color=_COLORS["minvar"],
+            s=190,
+            marker="o",
+            linewidths=1.1,
+            edgecolors="white",
+            zorder=6,
+            label="Min Var",
         )
 
     ax.xaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
@@ -139,7 +182,7 @@ def _plot_equity(
     color_cycle = [
         _COLORS["tangency"], _COLORS["minvar"], _COLORS["equal"],
     ]
-    ax.axhline(1, color="black", linewidth=0.8, alpha=0.4)
+    ax.axhline(1, color="black", linewidth=0.75, alpha=0.35)
 
     for i, (name, bt) in enumerate(backtests.items()):
         m = _oos_metrics(
@@ -150,14 +193,20 @@ def _plot_equity(
             f"DD {m['max_dd']:.0%}"
         )
         c = color_cycle[i % len(color_cycle)]
+        # Thin lines + slight transparency so overlapping curves stay readable
         ax.plot(
-            bt.portfolio_value, color=c, linewidth=2,
-            zorder=3, label=label,
+            bt.portfolio_value,
+            color=c,
+            linewidth=1.35,
+            solid_capstyle="round",
+            alpha=0.92,
+            zorder=3 + i,
+            label=label,
         )
 
     ax.set_title("Out-of-Sample Equity Curves")
     ax.set_ylabel("Portfolio Value")
-    ax.legend(loc="upper left", framealpha=0.95, fontsize=8)
+    ax.legend(loc="upper left", framealpha=0.95, fontsize=10)
 
 
 def _plot_correlation(
@@ -169,29 +218,36 @@ def _plot_correlation(
     corr = cov_df.values / np.outer(std, std)
     np.fill_diagonal(corr, 1.0)
 
-    Z = linkage(1 - corr, method="ward")
+    # Dissimilarity = 1 − ρ; linkage() needs condensed form, not a square matrix
+    dist = np.clip(1.0 - corr, 0.0, None)
+    np.fill_diagonal(dist, 0.0)
+    Z = linkage(squareform(dist, checks=False), method="average")
     order = leaves_list(Z)
     corr = corr[np.ix_(order, order)]
     tickers = cov_df.columns[order]
     labels = [_display_name(str(t), ticker_names) for t in tickers]
 
     im = ax.imshow(
-        corr, cmap="RdBu_r", vmin=-1, vmax=1, aspect="equal",
+        corr,
+        cmap="RdBu_r",
+        vmin=-1,
+        vmax=1,
+        aspect="equal",
+        interpolation="nearest",
     )
     ax.set_xticks(range(len(labels)))
     ax.set_yticks(range(len(labels)))
+    ax.set_xticklabels([])
     n = len(labels)
     if n <= 25:
-        ax.set_xticklabels(labels, rotation=90, fontsize=6)
-        ax.set_yticklabels(labels, fontsize=6)
+        ax.set_yticklabels(labels, fontsize=8)
     else:
-        ax.set_xticklabels([])
         ax.set_yticklabels([])
     ax.set_title("Correlation (Ledoit-Wolf, clustered)")
     divider = make_axes_locatable(ax)
     cax = divider.append_axes("right", size="4.2%", pad=0.06)
     cbar = plt.colorbar(im, cax=cax)
-    cbar.ax.tick_params(labelsize=7)
+    cbar.ax.tick_params(labelsize=9)
     ax.set_anchor("W")
 
 
@@ -218,21 +274,26 @@ def _plot_risk_contributions(
     for k, name in enumerate(name_list):
         rc, tickers = risk_contribs[name]
         ax.barh(
-            y + k * bar_h, rc[idx], height=bar_h,
-            color=colors[k % len(colors)], alpha=0.85,
+            y + k * bar_h,
+            rc[idx],
+            height=bar_h,
+            color=colors[k % len(colors)],
+            alpha=0.88,
+            linewidth=0.55,
+            edgecolor="white",
             label=name,
         )
 
     ax.set_yticks(y + bar_h * (len(name_list) - 1) / 2)
     ax.set_yticklabels(
         [_display_name(str(t), ticker_names) for t in tickers0[idx]],
-        fontsize=7,
+        fontsize=9,
     )
     ax.invert_yaxis()
     ax.xaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
     ax.set_xlabel("Risk Contribution")
     ax.set_title("Marginal Risk Contributions (top assets)")
-    ax.legend(loc="lower right", framealpha=0.95, fontsize=8)
+    ax.legend(loc="lower right", framealpha=0.95, fontsize=10)
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
@@ -254,7 +315,7 @@ def plot_report(
 ) -> Figure:
     """2×2 figure: frontier, equity, correlation (+ colorbar), risk contributions."""
     _apply_style()
-    fig = plt.figure(figsize=_REPORT_FIGSIZE)
+    fig = plt.figure(figsize=_REPORT_FIGSIZE, layout="constrained")
     gs = GridSpec(
         2, 2, figure=fig,
         width_ratios=[1, 1], height_ratios=[1, 1], **_GS_MAIN,
@@ -281,14 +342,15 @@ def plot_report(
     _plot_correlation(ax_c, cov_df, ticker_names)
     _plot_risk_contributions(fig.add_subplot(gs[1, 1]), risk_contribs, ticker_names)
 
-    fig.suptitle("Portfolio Optimizer Report", fontsize=15, fontweight="bold", y=0.98)
-    fig.tight_layout(rect=[0, 0.01, 1, 0.95])
+    fig.suptitle(
+        "Portfolio Optimizer Report", fontsize=16, fontweight="bold", y=0.995,
+    )
 
     if figures_dir:
         os.makedirs(figures_dir, exist_ok=True)
         fig.savefig(
             os.path.join(figures_dir, "portfolio_report.png"),
-            dpi=200,
-            bbox_inches="tight",
+            dpi=_SAVE_DPI,
+            facecolor=fig.get_facecolor(),
         )
     return fig
