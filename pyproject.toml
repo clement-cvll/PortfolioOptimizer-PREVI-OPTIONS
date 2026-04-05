@@ -10,11 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "bs4>=0.0.2",
-    "duckdb>=1.4.0",
     "matplotlib>=3.10.3",
     "pandas>=2.3.0",
     "pyarrow>=21.0.0",
-    "python-dotenv>=1.1.0",
+
     "requests>=2.32.4",
     "scikit-learn>=1.8.0",
     "scipy>=1.16.0",
@@ -47,4 +46,4 @@ extend-exclude = ["src/data"]
 select = ["E", "F", "I", "B", "UP"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["markowitz", "plots", "config", "build_database", "run_analysis"]
+known-first-party = ["markowitz", "plots", "config", "build_database", "run_analysis", "data"]

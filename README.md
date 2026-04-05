@@ -1,82 +1,58 @@
 # Portfolio Optimizer — PREVI-OPTIONS
 
-This is a **personal project**: a small Python playground around Markowitz-style portfolio optimisation on OPCVM funds listed in Previ-Options. I built it to learn and experiment with real data.
+Personal project: **Markowitz-style optimisation** on OPCVM funds from [Previ-Options](https://www.previ-direct.com/), using local **Parquet** prices and a small Python pipeline (scrape → load → optimise → walk-forward backtest → one figure).
 
-It pulls historical prices into a **local Parquet** store (read with **DuckDB**), fits **max Sharpe** and **min variance** portfolios, and tests them with an **out-of-sample** walk-forward backtest. Everything runs locally.
+## Pipeline
 
-## What it does
+1. **`build_database`** — Scrape the fund list, validate tickers with `yfinance`, append **hive-partitioned** Parquet under `src/data/opcvm_parquet/` (plus `ticker_meta.parquet`, `last_dates.parquet`).
+2. **`data.load_prices_parquet`** — Read prices with **PyArrow** (`partitioning="hive"`); pivot to wide; filter by history length and per-asset coverage.
+3. **`markowitz`** — Log returns, **Ledoit–Wolf** covariance, **max Sharpe** / **min variance**, **efficient frontier** (target-vol sweep), **walk-forward** backtests, **1/N** benchmark, marginal **risk contributions**.
+4. **`plots.plot_report`** — Single PNG: frontier (+ CML), OOS equity curves, clustered **correlation** heatmap, risk-contribution bars (fund names from metadata when available).
+5. **`main.py`** — `uv run main.py` runs ingest then `run_analysis.main()`.
 
-- **Data:** Scrapes the Previ-Options universe, resolves tickers with `yfinance`, and saves partitioned Parquet under `src/data/` (metadata and incremental updates included).
-- **Prep:** You can easily adjust how much price history to include, filter out assets with too little data, calculate log-returns, and apply a Ledoit–Wolf covariance shrinkage. All of these options are configurable in [`src/config.py`](src/config.py).
-- **Optimisation:** Tangency (max Sharpe) and minimum variance, plus a Monte Carlo cloud for the frontier chart.
-- **Backtest:** Expanding window, with optional **turnover penalty** and **transaction costs** so results aren’t totally naive.
-- **Plots:** One combined figure (`portfolio_report.png`): frontier, equity curves, and per-period Sharpe bars.
-
-![Efficient frontier, OOS equity curves, metrics, and per-period Sharpe bars](src/figures/portfolio_report.png)
-
-## Quick start (everything in one go)
-
-From the **repository root** (after [uv](https://docs.astral.sh/uv/) is installed):
+## Quick start
 
 ```bash
-git clone https://github.com/clement-cvll/PortfolioOptimizer-PREVI-OPTIONS.git
-cd PortfolioOptimizer-PREVI-OPTIONS
 uv sync
-uv run main.py
+uv run main.py              # incremental Parquet update + analysis
+uv run main.py --rebuild    # full re-scrape + rebuild, then analysis
 ```
 
-That installs dependencies, **updates or builds** the local Parquet dataset (network needed the first time), then runs optimisation, backtests, and saves figures. Equivalent commands: `uv run python main.py` or `uv run previ-options`.
-
-**Flags:**
-
-| Command | What it does |
-|---------|----------------|
-| `uv run main.py` | Incremental data update (if you already have data), then full analysis |
-| `uv run main.py --rebuild` | Re-scrape tickers and rebuild Parquet from scratch, then analysis |
-
-**Outputs:** `src/figures/portfolio_report.png` and a short summary in the terminal.
+Outputs: `src/figures/portfolio_report.png` and a short log to the terminal. Needs network for the first build / rebuild.
 
 ## Configuration
 
-Everything lives in [`src/config.py`](src/config.py): where data and figures go (`src/data/`, `src/figures/` by default), risk-free rate, rebalance cadence, Monte Carlo size, and so on. Edit the file directly—no extra env setup required.
+All defaults are in [`src/config.py`](src/config.py) (paths, `YEARS`, `MIN_DATA_FILL_RATIO`, risk-free rate, rebalance horizon, `TRANSACTION_COST`, `TURNOVER_PENALTY`, etc.). No environment variables.
 
-### Key parameters (defaults in `config.py`)
+| Parameter | Default | Role |
+|-----------|---------|------|
+| `YEARS` | 6 | Calendar window for prices |
+| `MIN_DATA_FILL_RATIO` | 0.8 | Drop assets with too many missing days |
+| `RISK_FREE_ANNUAL` | 1.93% | €STR-style rate for Sharpe / CML |
+| `REBAL_DAYS` / `MIN_TRAIN_DAYS` | 126 / 504 | Walk-forward cadence and burn-in |
+| `TRANSACTION_COST` | 1% | Applied to turnover on **optimised** backtests only (`walk_forward_backtest`). The **1/N** helper does not model costs—set cost to `0` for a fair gross comparison if needed. |
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `YEARS` | 6 | History window (years of trading days) |
-| `MIN_DATA_FILL_RATIO` | 0.95 | Minimum coverage per asset |
-| `MAX_WEIGHT` | 1.0 | Upper bound per asset |
-| `RISK_FREE_ANNUAL` | 1.93% | Risk-free (€STR) |
-| `MC_SAMPLES` | 500,000 | Monte Carlo samples for frontier cloud |
-| `REBAL_DAYS` | 126 | Days between rebalances |
-| `MIN_TRAIN_DAYS` | 504 | Minimum training length before first rebalance |
-| `TRANSACTION_COST` | 1.0% | Cost applied to turnover at rebalance |
-| `TURNOVER_PENALTY` | 0.0 | Soft penalty on L1 turnover vs previous weights in the optimiser |
+## Report preview
 
-## Project layout
+![Portfolio report](src/figures/portfolio_report.png)
+
+## Layout
 
 ```
 .
-├── assets/
-│   └── portfolio_report.png   # Sample figure for this README
-├── main.py                 # Root entry: ingest + run_analysis
+├── main.py
 ├── pyproject.toml
 ├── README.md
 ├── src/
 │   ├── config.py
-│   ├── data.py             # DuckDB + Parquet price load
-│   ├── markowitz.py        # Returns, optimisation, walk-forward backtest
-│   ├── plots.py            # Combined report figure
-│   ├── run_analysis.py     # Pipeline CLI
-│   ├── build_database.py   # Scrape + Parquet ingest
-│   ├── tickers.csv         # Cached universe (optional)
-│   ├── data/               # Generated Parquet + metadata (gitignored)
-│   └── figures/            # Generated plots (gitignored)
+│   ├── data.py              # Parquet → wide prices
+│   ├── markowitz.py         # Optimisation & backtests
+│   ├── plots.py             # `portfolio_report.png`
+│   ├── run_analysis.py      # End-to-end analysis
+│   ├── build_database.py    # Scrape & ingest
+│   ├── data/                # Generated data (often gitignored)
+│   └── figures/             # Generated plots
 └── tests/
-    ├── test_markowitz.py
-    ├── test_data_layer.py
-    └── test_turnover_penalty.py
 ```
 
 ## Development

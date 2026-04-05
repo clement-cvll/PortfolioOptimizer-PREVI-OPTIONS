@@ -11,7 +11,7 @@ def _write_partitioned_parquet(base_dir: str, df: pd.DataFrame, *, ts: int = 1) 
         part_dir = os.path.join(base_dir, f"ticker={ticker}", f"year={int(year)}")
         os.makedirs(part_dir, exist_ok=True)
         path = os.path.join(part_dir, f"part-{ts}.parquet")
-        g.drop(columns=["year"]).to_parquet(path, index=False)
+        g.drop(columns=["ticker", "year"]).to_parquet(path, index=False)
 
 
 def test_load_prices_from_parquet_basic(tmp_path) -> None:

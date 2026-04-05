@@ -1,12 +1,10 @@
-"""Data access layer (DuckDB + Parquet)."""
-
-from __future__ import annotations
+"""Data access layer — load prices from hive-partitioned Parquet."""
 
 import os
 
-import duckdb
 import numpy as np
 import pandas as pd
+import pyarrow.dataset as pds
 
 
 def load_prices_parquet(
@@ -17,54 +15,41 @@ def load_prices_parquet(
     annual_factor: int = 252,
     fill_ratio: float = 0.94,
 ) -> tuple[pd.DataFrame, pd.Series]:
-    """Load close prices from a partitioned Parquet dataset.
+    """Load close prices for the last *years* of trading.
 
-    Expected layout: hive partitions under parquet_dir, e.g.
-    ticker=.../year=.../*.parquet
-    Returns (prices DataFrame, ticker→name Series).
+    Returns (prices DataFrame indexed by date, ticker→name Series).
+    Assets with too many NaNs (below *fill_ratio*) are dropped.
     """
     if not parquet_dir or not os.path.exists(parquet_dir):
         raise FileNotFoundError(f"parquet_dir not found: {parquet_dir!r}")
 
-    glob = os.path.join(parquet_dir, "**", "*.parquet")
-
-    con = duckdb.connect(database=":memory:")
-    try:
-        df = con.execute(
-            """
-            WITH d AS (
-                SELECT date, ticker, close
-                FROM read_parquet(?, hive_partitioning=1)
-            )
-            SELECT date, ticker, close
-            FROM d
-            WHERE date >= (SELECT max(date) FROM d) - (? * INTERVAL '1 year')
-            """,
-            [glob, years],
-        ).df()
-    finally:
-        con.close()
+    dataset = pds.dataset(parquet_dir, format="parquet", partitioning="hive")
+    df = dataset.to_table(columns=["date", "ticker", "close"]).to_pandas()
 
     if df.empty:
-        raise RuntimeError(f"No data found under parquet_dir={parquet_dir!r}")
+        raise RuntimeError(
+            f"No data found under parquet_dir={parquet_dir!r}"
+        )
 
     df["date"] = pd.to_datetime(df["date"])
     df["ticker"] = df["ticker"].astype(str).astype("category")
-    df["close"] = pd.to_numeric(df["close"], errors="coerce").astype(np.float64)
+    df["close"] = pd.to_numeric(df["close"], errors="coerce").astype(
+        np.float64
+    )
 
-    price_df = df.pivot(index="date", columns="ticker", values="close")
-    min_obs = annual_factor * years
-    prices = price_df.sort_index().tail(min_obs)
-    n_rows = len(prices)
-    # Threshold must use actual row count: if history is shorter than min_obs,
-    # int(fill_ratio * min_obs) can exceed n_rows and drop every column.
-    thresh = max(1, int(fill_ratio * n_rows))
+    cutoff = df["date"].max() - pd.DateOffset(years=years)
+    df = df[df["date"] >= cutoff]
+
+    prices = df.pivot(index="date", columns="ticker", values="close")
+    prices = prices.sort_index().tail(annual_factor * years)
+    thresh = max(1, int(fill_ratio * len(prices)))
     prices = prices.dropna(axis=1, thresh=thresh).dropna(axis=0)
 
-    if not ticker_meta_path or not os.path.exists(ticker_meta_path):
-        ticker_names = pd.Series(dtype=object)
+    if ticker_meta_path and os.path.exists(ticker_meta_path):
+        ticker_names = pd.read_parquet(
+            ticker_meta_path
+        ).set_index("ticker")["name"]
     else:
-        meta = pd.read_parquet(ticker_meta_path)
-        ticker_names = meta.set_index("ticker")["name"]
+        ticker_names = pd.Series(dtype=object)
 
     return prices, ticker_names

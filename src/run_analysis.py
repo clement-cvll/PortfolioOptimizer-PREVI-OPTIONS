@@ -1,9 +1,4 @@
-"""Run the full Markowitz portfolio analysis pipeline.
-
-Usage:
-    cd src/
-    uv run python run_analysis.py
-"""
+"""Markowitz analysis: load data → optimise → backtest → report."""
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -11,21 +6,20 @@ import numpy as np
 import config as cfg
 from data import load_prices_parquet
 from markowitz import (
-    OptimResult,
     compute_log_returns,
     efficient_frontier,
+    equal_weight_backtest,
     format_weights,
     max_sharpe,
     min_variance,
-    monte_carlo,
-    portfolio_stats,
+    risk_contributions,
     shrink_covariance,
     walk_forward_backtest,
 )
 from plots import plot_report
 
 
-def _print_portfolio(name: str, result: OptimResult, prices, ticker_names) -> None:
+def _print_portfolio(name: str, result, prices, ticker_names) -> None:
     print(f"{name} portfolio:")
     print(
         format_weights(
@@ -36,7 +30,8 @@ def _print_portfolio(name: str, result: OptimResult, prices, ticker_names) -> No
         )
     )
     print(
-        f"  Return {result.ret:.2%}  Vol {result.vol:.2%}  Sharpe {result.sharpe:.2f}\n"
+        f"  Return {result.ret:.2%}  Vol {result.vol:.2%}  "
+        f"Sharpe {result.sharpe:.2f}\n"
     )
 
 
@@ -48,66 +43,41 @@ def main() -> None:
         annual_factor=cfg.ANNUAL_FACTOR,
         fill_ratio=cfg.MIN_DATA_FILL_RATIO,
     )
-    n_assets = prices.shape[1]
-    print(f"Universe: {n_assets} assets, {len(prices)} trading days")
-    if n_assets == 0:
+    n = prices.shape[1]
+    print(f"Universe: {n} assets, {len(prices)} trading days")
+    if n == 0:
         raise RuntimeError(
-            "No assets left after loading Parquet and applying MIN_DATA_FILL_RATIO. "
-            "Try lowering MIN_DATA_FILL_RATIO in config.py or shortening YEARS."
+            "No assets survived filtering. "
+            "Lower MIN_DATA_FILL_RATIO or shorten YEARS in config.py."
         )
 
-    log_returns = compute_log_returns(prices)
-    cov_df = shrink_covariance(log_returns)
-    mu = log_returns.mean().values
+    lr = compute_log_returns(prices)
+    mu, cov_df = lr.mean().values, shrink_covariance(lr)
     cov = cov_df.values
 
-    tangency = max_sharpe(
-        mu,
-        cov,
-        n_assets=n_assets,
+    opt = dict(
+        n_assets=n,
         max_weight=cfg.MAX_WEIGHT,
         annual_factor=cfg.ANNUAL_FACTOR,
         risk_free=cfg.RISK_FREE_ANNUAL,
     )
+    tangency, min_var = max_sharpe(mu, cov, **opt), min_variance(mu, cov, **opt)
     _print_portfolio("Tangency", tangency, prices, ticker_names)
-
-    mv_weights = min_variance(
-        mu,
-        cov,
-        n_assets=n_assets,
-        max_weight=cfg.MAX_WEIGHT,
-        annual_factor=cfg.ANNUAL_FACTOR,
-    )
-    mv_ret, mv_vol, mv_sharpe = portfolio_stats(
-        mv_weights,
-        mu,
-        cov,
-        annual_factor=cfg.ANNUAL_FACTOR,
-        risk_free=cfg.RISK_FREE_ANNUAL,
-    )
-    min_var_port = OptimResult(
-        weights=mv_weights, ret=mv_ret, vol=mv_vol, sharpe=mv_sharpe
-    )
-
-    _print_portfolio("Minimum Variance", min_var_port, prices, ticker_names)
-
-    mc_vols, mc_rets, mc_sharpes = monte_carlo(
-        mu,
-        cov,
-        n_assets=n_assets,
-        n_samples=cfg.MC_SAMPLES,
-        annual_factor=cfg.ANNUAL_FACTOR,
-        risk_free=cfg.RISK_FREE_ANNUAL,
-        seed=cfg.MC_SEED,
-    )
+    _print_portfolio("Minimum Variance", min_var, prices, ticker_names)
 
     front_vols, front_rets = efficient_frontier(
         mu,
         cov,
-        n_assets=n_assets,
+        n_assets=n,
         max_weight=cfg.MAX_WEIGHT,
         annual_factor=cfg.ANNUAL_FACTOR,
     )
+
+    rc = dict(cov=cov, annual_factor=cfg.ANNUAL_FACTOR)
+    risk_contribs = {
+        "Tangency": (risk_contributions(tangency.weights, **rc), prices.columns),
+        "Min Var": (risk_contributions(min_var.weights, **rc), prices.columns),
+    }
 
     bt_kw = dict(
         max_weight=cfg.MAX_WEIGHT,
@@ -118,28 +88,40 @@ def main() -> None:
         min_train_days=cfg.MIN_TRAIN_DAYS,
         transaction_cost=cfg.TRANSACTION_COST,
     )
-
-    bt_ms = walk_forward_backtest(log_returns, strategy="max_sharpe", **bt_kw)
-    bt_mv = walk_forward_backtest(log_returns, strategy="min_variance", **bt_kw)
-
-    print(
-        f"Max Sharpe Backtest: {len(bt_ms.period_sharpes)} periods, "
-        f"mean OOS Sharpe {np.nanmean(bt_ms.period_sharpes):.2f}"
+    bt_ms = walk_forward_backtest(lr, strategy="max_sharpe", **bt_kw)
+    bt_mv = walk_forward_backtest(lr, strategy="min_variance", **bt_kw)
+    bt_ew = equal_weight_backtest(
+        lr,
+        annual_factor=cfg.ANNUAL_FACTOR,
+        risk_free=cfg.RISK_FREE_ANNUAL,
+        rebal_days=cfg.REBAL_DAYS,
+        min_train_days=cfg.MIN_TRAIN_DAYS,
     )
-    print(
-        f"Min Variance Backtest: {len(bt_mv.period_sharpes)} periods, "
-        f"mean OOS Sharpe {np.nanmean(bt_mv.period_sharpes):.2f}"
-    )
+
+    for label, bt in (
+        ("Max Sharpe", bt_ms),
+        ("Min Variance", bt_mv),
+        ("Equal Weight", bt_ew),
+    ):
+        m = np.nanmean(bt.period_sharpes)
+        print(
+            f"{label} Backtest: {len(bt.period_sharpes)} periods, "
+            f"mean OOS Sharpe {m:.2f}"
+        )
 
     plot_report(
-        mc_vols=mc_vols,
-        mc_returns=mc_rets,
-        mc_sharpes=mc_sharpes,
         frontier_vols=front_vols,
         frontier_rets=front_rets,
         tangency=tangency,
-        min_var=min_var_port,
-        backtests={"Max Sharpe": bt_ms, "Min Variance": bt_mv},
+        min_var=min_var,
+        backtests={
+            "Max Sharpe": bt_ms,
+            "Min Variance": bt_mv,
+            "Equal Weight (1/N)": bt_ew,
+        },
+        cov_df=cov_df,
+        risk_contribs=risk_contribs,
+        ticker_names=ticker_names,
         risk_free=cfg.RISK_FREE_ANNUAL,
         annual_factor=cfg.ANNUAL_FACTOR,
         figures_dir=cfg.FIGURES_DIR,

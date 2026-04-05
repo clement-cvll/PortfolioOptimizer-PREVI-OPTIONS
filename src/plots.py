@@ -2,494 +2,292 @@
 
 import os
 
-import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from matplotlib.figure import Figure
 from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import PercentFormatter
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from scipy.cluster.hierarchy import leaves_list, linkage
 
 from markowitz import BacktestResult, OptimResult
+
+_COLORS = {
+    "tangency": "#e63946",
+    "minvar": "#2196F3",
+    "equal": "#4CAF50",
+    "cml": "#e63946",
+    "frontier": "#1a1a2e",
+}
+_FRONTIER_XLIM = (0.0, 0.20)  # vol axis (fraction → %)
+_FRONTIER_YLIM = (0.0, 0.18)  # return axis
+_REPORT_FIGSIZE = (16, 10)
+_GS_MAIN = dict(hspace=0.34, wspace=0.42)
+_GS_CORR = dict(width_ratios=[0.68, 0.32], wspace=0.02)
+
+
+# ── Style ─────────────────────────────────────────────────────────────────────
+
+
+def _apply_style() -> None:
+    plt.style.use("seaborn-v0_8-whitegrid")
+    plt.rcParams.update({
+        "axes.titlesize": 12,
+        "axes.labelsize": 11,
+        "axes.titlepad": 8,
+        "legend.fontsize": 9,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+    })
+
+
+# ── OOS metrics ──────────────────────────────────────────────────────────────
 
 
 def _oos_metrics(
     bt: BacktestResult, *, annual_factor: int, risk_free: float
-) -> dict[str, float | int]:
-    """Aggregate OOS simple-return series into annualised stats and max drawdown."""
+) -> dict[str, float]:
     r = bt.oos_returns
     n = len(r)
+    nan = float("nan")
     if n == 0:
-        return {
-            "ann_ret": float("nan"),
-            "ann_vol": float("nan"),
-            "sharpe": float("nan"),
-            "max_dd": float("nan"),
-            "n_days": 0,
-            "n_periods": len(bt.period_sharpes),
-        }
+        return dict(ann_ret=nan, ann_vol=nan, sharpe=nan, max_dd=nan)
     total_ret = float((1 + r).prod() - 1)
     ann_ret = (1 + total_ret) ** (annual_factor / n) - 1
-    ann_vol = float(r.std(ddof=1) * np.sqrt(annual_factor)) if n > 1 else float("nan")
-    if ann_vol == ann_vol:
-        sharpe = (ann_ret - risk_free) / (ann_vol + 1e-12)
-    else:
-        sharpe = float("nan")
-    pv = bt.portfolio_value
-    max_dd = float((pv / pv.cummax() - 1).min())
-    return {
-        "ann_ret": float(ann_ret),
-        "ann_vol": ann_vol,
-        "sharpe": float(sharpe),
-        "max_dd": max_dd,
-        "n_days": n,
-        "n_periods": len(bt.period_sharpes),
-    }
-
-
-def _metrics_report_text(
-    *,
-    tangency: OptimResult,
-    min_var: OptimResult | None,
-    backtests: dict[str, BacktestResult],
-    annual_factor: int,
-    risk_free: float,
-) -> str:
-    lines: list[str] = [
-        "In-sample (full window, point estimates)",
-        f"  Tangency:  ret {tangency.ret:.2%}  vol {tangency.vol:.2%}  "
-        f"Sharpe {tangency.sharpe:.2f}",
-    ]
-    if min_var:
-        lines.append(
-            f"  Min var:   ret {min_var.ret:.2%}  vol {min_var.vol:.2%}  "
-            f"Sharpe {min_var.sharpe:.2f}"
-        )
-    lines.append("")
-    lines.append(
-        f"Out-of-sample (walk-forward; ann. uses {annual_factor} trading days / yr)"
+    ann_vol = float(r.std(ddof=1) * np.sqrt(annual_factor)) if n > 1 else nan
+    sharpe = (
+        (ann_ret - risk_free) / (ann_vol + 1e-12)
+        if np.isfinite(ann_vol) else nan
     )
-    if not backtests:
-        lines.append("  (no backtests)")
-        return "\n".join(lines)
-    for name, bt in backtests.items():
-        m = _oos_metrics(bt, annual_factor=annual_factor, risk_free=risk_free)
-        lines.append(f"  {name}:")
-        lines.append(
-            f"    ann. return {m['ann_ret']:.2%}  ann. vol {m['ann_vol']:.2%}  "
-            f"Sharpe {m['sharpe']:.2f}  max DD {m['max_dd']:.2%}"
-        )
-        lines.append(f"    OOS days {m['n_days']}  rebalance periods {m['n_periods']}")
-    return "\n".join(lines)
-
-
-def _apply_professional_style() -> None:
-    plt.style.use("seaborn-v0_8-whitegrid")
-    plt.rcParams.update(
-        {
-            "axes.titlesize": 12,
-            "axes.labelsize": 11,
-            "axes.titlepad": 8,
-            "legend.fontsize": 9,
-            "axes.spines.top": False,
-            "axes.spines.right": False,
-        }
+    max_dd = float((bt.portfolio_value / bt.portfolio_value.cummax() - 1).min())
+    return dict(
+        ann_ret=float(ann_ret), ann_vol=ann_vol, sharpe=float(sharpe), max_dd=max_dd,
     )
 
 
-def _plot_frontier_ax(
+# ── Per-axis helpers ─────────────────────────────────────────────────────────
+
+
+def _display_name(ticker: str, ticker_names: pd.Series) -> str:
+    return str(ticker_names.get(ticker, ticker))
+
+
+def _plot_frontier(
     ax,
     *,
-    mc_vols: np.ndarray,
-    mc_returns: np.ndarray,
-    mc_sharpes: np.ndarray,
     frontier_vols: np.ndarray,
     frontier_rets: np.ndarray,
     tangency: OptimResult,
     min_var: OptimResult | None,
     risk_free: float,
 ):
-    mask = (mc_returns > -0.02) & (mc_vols < frontier_vols.max() * 1.2)
-    visible = np.where(mask)[0]
-    if len(visible) == 0:
-        raise ValueError(
-            "No Monte Carlo points are within the visible plotting window."
-        )
-
-    s_min = float(mc_sharpes[visible].min())
-    s_max = float(mc_sharpes[visible].max())
-    norm = mcolors.TwoSlopeNorm(
-        vmin=min(s_min, -0.001),
-        vcenter=0,
-        vmax=max(s_max, 0.001),
-    )
-
-    v_vols = mc_vols[visible]
-    v_rets = mc_returns[visible]
-    v_sharpes = mc_sharpes[visible]
-    if len(visible) >= 150_000:
-        mappable = ax.hexbin(
-            v_vols,
-            v_rets,
-            C=v_sharpes,
-            reduce_C_function=np.mean,
-            gridsize=200,
-            cmap="Greens",
-            norm=norm,
-            mincnt=1,
-            linewidths=0,
-            alpha=0.95,
-            zorder=2,
-        )
-    else:
-        mappable = ax.scatter(
-            v_vols,
-            v_rets,
-            c=v_sharpes,
-            cmap="Greens",
-            norm=norm,
-            s=5,
-            alpha=0.25,
-            rasterized=True,
-            zorder=2,
-        )
-
+    """Efficient frontier line with CML, tangency, and min-var markers."""
     ax.plot(
-        frontier_vols,
-        frontier_rets,
-        color="#1a1a2e",
-        linewidth=2.5,
-        zorder=4,
+        frontier_vols, frontier_rets,
+        color=_COLORS["frontier"], linewidth=2.5, zorder=4,
         label="Efficient frontier",
     )
 
-    cml_vols = np.array([0, tangency.vol * 1.05])
+    x_hi = _FRONTIER_XLIM[1]
+    cml_x = np.linspace(0.0, x_hi, 50)
     ax.plot(
-        cml_vols,
-        risk_free + tangency.sharpe * cml_vols,
-        color="#e63946",
-        linewidth=1.8,
-        linestyle="--",
-        zorder=4,
-        label="Capital Market Line",
+        cml_x, risk_free + tangency.sharpe * cml_x,
+        color=_COLORS["cml"], linewidth=1.8, linestyle="--",
+        zorder=4, label="Capital Market Line",
     )
-    ax.scatter(0, risk_free, color="#e63946", s=55, zorder=6)
+    ax.scatter(0, risk_free, color=_COLORS["cml"], s=55, zorder=6)
     ax.scatter(
-        tangency.vol,
-        tangency.ret,
-        color="#e63946",
-        s=240,
-        marker="*",
-        zorder=6,
+        tangency.vol, tangency.ret,
+        color=_COLORS["tangency"], s=240, marker="*", zorder=6,
         label=f"Tangency (SR {tangency.sharpe:.2f})",
     )
 
     if min_var:
         ax.scatter(
-            min_var.vol,
-            min_var.ret,
-            color="#2196F3",
-            s=160,
-            marker="o",
-            edgecolor="white",
-            zorder=6,
-            label="Min Var",
+            min_var.vol, min_var.ret,
+            color=_COLORS["minvar"], s=160, marker="o",
+            edgecolor="white", zorder=6, label="Min Var",
         )
 
     ax.xaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
     ax.yaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
     ax.set(xlabel="Annualised Volatility", ylabel="Annualised Return")
-    ax.set_xlim(left=0)
+    ax.set_xlim(*_FRONTIER_XLIM)
+    ax.set_ylim(*_FRONTIER_YLIM)
     ax.set_title("Efficient Frontier")
     ax.legend(framealpha=0.95, loc="upper left")
-    return mappable
 
 
-def _plot_strategy_comparison_axes(
-    ax_eq, ax_sh, backtests: dict[str, BacktestResult]
-) -> None:
+def _plot_equity(
+    ax,
+    backtests: dict[str, BacktestResult],
+    *,
+    annual_factor: int,
+    risk_free: float,
+):
+    """OOS equity curves with key stats in the legend."""
     if not backtests:
-        for ax in (ax_eq, ax_sh):
-            ax.set_axis_off()
-            ax.text(
-                0.5,
-                0.5,
-                "No walk-forward backtests",
-                ha="center",
-                va="center",
-                fontsize=11,
-                transform=ax.transAxes,
-            )
+        ax.set_axis_off()
+        ax.text(
+            0.5, 0.5, "No walk-forward backtests",
+            ha="center", va="center", fontsize=11,
+            transform=ax.transAxes,
+        )
         return
 
-    colors = ["#e63946", "#2196F3", "#4CAF50", "#FF9800"]
-    first_bt = next(iter(backtests.values()))
+    color_cycle = [
+        _COLORS["tangency"], _COLORS["minvar"], _COLORS["equal"],
+    ]
+    ax.axhline(1, color="black", linewidth=0.8, alpha=0.4)
 
-    ax_eq.axhline(1, color="black", linewidth=0.8, alpha=0.4)
-    if len(first_bt.rebal_dates) <= 60:
-        for d in first_bt.rebal_dates:
-            ax_eq.axvline(d, color="#9E9E9E", linewidth=0.8, linestyle=":", alpha=0.7)
+    for i, (name, bt) in enumerate(backtests.items()):
+        m = _oos_metrics(
+            bt, annual_factor=annual_factor, risk_free=risk_free
+        )
+        label = (
+            f"{name}  SR {m['sharpe']:.2f}  "
+            f"DD {m['max_dd']:.0%}"
+        )
+        c = color_cycle[i % len(color_cycle)]
+        ax.plot(
+            bt.portfolio_value, color=c, linewidth=2,
+            zorder=3, label=label,
+        )
 
-    for idx, (name, bt) in enumerate(backtests.items()):
-        color = colors[idx % len(colors)]
-        ax_eq.plot(bt.portfolio_value, color=color, linewidth=2, zorder=3, label=name)
+    ax.set_title("Out-of-Sample Equity Curves")
+    ax.set_ylabel("Portfolio Value")
+    ax.legend(loc="upper left", framealpha=0.95, fontsize=8)
 
-    ax_eq.set_title("Out-of-Sample Equity Curves")
-    ax_eq.set_ylabel("Portfolio Value")
-    ax_eq.legend(loc="upper left", framealpha=0.95)
 
-    n_strats = len(backtests)
-    width = 0.8 / n_strats
-    x = np.arange(len(first_bt.period_sharpes))
+def _plot_correlation(
+    ax, cov_df: pd.DataFrame, ticker_names: pd.Series,
+):
+    """Clustered Ledoit-Wolf correlation heatmap (labels = fund names)."""
+    std = np.sqrt(np.diag(cov_df.values))
+    std[std == 0] = 1.0
+    corr = cov_df.values / np.outer(std, std)
+    np.fill_diagonal(corr, 1.0)
 
-    for idx, (name, bt) in enumerate(backtests.items()):
-        color = colors[idx % len(colors)]
-        offset = (idx - n_strats / 2 + 0.5) * width
-        ax_sh.bar(
-            x + offset,
-            bt.period_sharpes,
-            width=width,
-            color=color,
-            alpha=0.85,
+    Z = linkage(1 - corr, method="ward")
+    order = leaves_list(Z)
+    corr = corr[np.ix_(order, order)]
+    tickers = cov_df.columns[order]
+    labels = [_display_name(str(t), ticker_names) for t in tickers]
+
+    im = ax.imshow(
+        corr, cmap="RdBu_r", vmin=-1, vmax=1, aspect="equal",
+    )
+    ax.set_xticks(range(len(labels)))
+    ax.set_yticks(range(len(labels)))
+    n = len(labels)
+    if n <= 25:
+        ax.set_xticklabels(labels, rotation=90, fontsize=6)
+        ax.set_yticklabels(labels, fontsize=6)
+    else:
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
+    ax.set_title("Correlation (Ledoit-Wolf, clustered)")
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="4.2%", pad=0.06)
+    cbar = plt.colorbar(im, cax=cax)
+    cbar.ax.tick_params(labelsize=7)
+    ax.set_anchor("W")
+
+
+def _plot_risk_contributions(
+    ax,
+    risk_contribs: dict[str, tuple[np.ndarray, pd.Index]],
+    ticker_names: pd.Series,
+):
+    """Side-by-side horizontal bar chart of marginal risk contributions."""
+    if not risk_contribs:
+        ax.set_axis_off()
+        return
+
+    name_list = list(risk_contribs.keys())
+    colors = [_COLORS.get("tangency"), _COLORS.get("minvar")]
+    rc0, tickers0 = risk_contribs[name_list[0]]
+    order = np.argsort(rc0)[::-1]
+    top = min(15, len(order))
+    idx = order[:top]
+
+    y = np.arange(top)
+    bar_h = 0.35
+
+    for k, name in enumerate(name_list):
+        rc, tickers = risk_contribs[name]
+        ax.barh(
+            y + k * bar_h, rc[idx], height=bar_h,
+            color=colors[k % len(colors)], alpha=0.85,
             label=name,
         )
 
-    ax_sh.axhline(0, color="black", linewidth=0.8, alpha=0.5)
-    ax_sh.set_xticks(x)
-    ax_sh.set_xticklabels(
-        [d.strftime("%b %Y") for d in first_bt.rebal_dates],
-        rotation=30,
-        ha="right",
-        fontsize=8,
+    ax.set_yticks(y + bar_h * (len(name_list) - 1) / 2)
+    ax.set_yticklabels(
+        [_display_name(str(t), ticker_names) for t in tickers0[idx]],
+        fontsize=7,
     )
-    ax_sh.tick_params(axis="x", pad=2)
-    ax_sh.set_title("Out-of-Sample Sharpe per Period")
-    ax_sh.set_ylabel("Sharpe")
+    ax.invert_yaxis()
+    ax.xaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
+    ax.set_xlabel("Risk Contribution")
+    ax.set_title("Marginal Risk Contributions (top assets)")
+    ax.legend(loc="lower right", framealpha=0.95, fontsize=8)
+
+
+# ── Public entry point ───────────────────────────────────────────────────────
 
 
 def plot_report(
     *,
-    mc_vols: np.ndarray,
-    mc_returns: np.ndarray,
-    mc_sharpes: np.ndarray,
     frontier_vols: np.ndarray,
     frontier_rets: np.ndarray,
     tangency: OptimResult,
     min_var: OptimResult | None,
     backtests: dict[str, BacktestResult],
+    cov_df: pd.DataFrame,
+    risk_contribs: dict[str, tuple[np.ndarray, pd.Index]],
+    ticker_names: pd.Series,
     risk_free: float = 0.0193,
     annual_factor: int = 252,
     figures_dir: str | None = None,
 ) -> Figure:
-    """Single professional report: frontier + equity curves + Sharpe bars + metrics."""
-    _apply_professional_style()
-
-    # 2×2 grid: tall top row (frontier | equity), shorter bottom (metrics | Sharpe).
-    # Avoids stacked right-column titles overlapping and keeps frontier x-axis clear.
-    fig = plt.figure(figsize=(16, 9))
+    """2×2 figure: frontier, equity, correlation (+ colorbar), risk contributions."""
+    _apply_style()
+    fig = plt.figure(figsize=_REPORT_FIGSIZE)
     gs = GridSpec(
-        2,
-        2,
-        figure=fig,
-        width_ratios=[1.05, 1.0],
-        height_ratios=[2.5, 1.0],
-        hspace=0.36,
-        wspace=0.28,
+        2, 2, figure=fig,
+        width_ratios=[1, 1], height_ratios=[1, 1], **_GS_MAIN,
     )
 
-    ax_frontier = fig.add_subplot(gs[0, 0])
-    ax_eq = fig.add_subplot(gs[0, 1])
-    ax_metrics = fig.add_subplot(gs[1, 0])
-    ax_sh = fig.add_subplot(gs[1, 1])
-
-    mappable = _plot_frontier_ax(
-        ax_frontier,
-        mc_vols=mc_vols,
-        mc_returns=mc_returns,
-        mc_sharpes=mc_sharpes,
+    _plot_frontier(
+        fig.add_subplot(gs[0, 0]),
         frontier_vols=frontier_vols,
         frontier_rets=frontier_rets,
         tangency=tangency,
         min_var=min_var,
         risk_free=risk_free,
     )
-    fig.colorbar(mappable, ax=ax_frontier, pad=0.02, fraction=0.035).set_label(
-        "Sharpe Ratio"
-    )
-
-    _plot_strategy_comparison_axes(ax_eq, ax_sh, backtests)
-
-    metrics_txt = _metrics_report_text(
-        tangency=tangency,
-        min_var=min_var,
-        backtests=backtests,
+    _plot_equity(
+        fig.add_subplot(gs[0, 1]),
+        backtests,
         annual_factor=annual_factor,
         risk_free=risk_free,
     )
-    ax_metrics.set_axis_off()
-    ax_metrics.set_xlim(0, 1)
-    ax_metrics.set_ylim(0, 1)
-    ax_metrics.text(
-        0.02,
-        0.98,
-        metrics_txt,
-        transform=ax_metrics.transAxes,
-        fontsize=11,
-        va="top",
-        ha="left",
-        family="monospace",
-        linespacing=1.22,
-        clip_on=False,
-        bbox=dict(
-            boxstyle="round,pad=0.3",
-            facecolor="#f8f9fa",
-            edgecolor="#cccccc",
-        ),
-    )
 
-    fig.suptitle(
-        "Portfolio Optimizer Report", fontsize=15, fontweight="bold", y=0.98
-    )
-    fig.tight_layout(rect=[0, 0.02, 1, 0.93])
+    gsc = gs[1, 0].subgridspec(1, 2, **_GS_CORR)
+    ax_c = fig.add_subplot(gsc[0, 0])
+    fig.add_subplot(gsc[0, 1]).set_axis_off()
+    _plot_correlation(ax_c, cov_df, ticker_names)
+    _plot_risk_contributions(fig.add_subplot(gs[1, 1]), risk_contribs, ticker_names)
+
+    fig.suptitle("Portfolio Optimizer Report", fontsize=15, fontweight="bold", y=0.98)
+    fig.tight_layout(rect=[0, 0.01, 1, 0.95])
 
     if figures_dir:
         os.makedirs(figures_dir, exist_ok=True)
         fig.savefig(
             os.path.join(figures_dir, "portfolio_report.png"),
-            dpi=200,
-            bbox_inches="tight",
-        )
-    return fig
-
-
-def plot_frontier(
-    mc_vols: np.ndarray,
-    mc_returns: np.ndarray,
-    mc_sharpes: np.ndarray,
-    frontier_vols: np.ndarray,
-    frontier_rets: np.ndarray,
-    tangency: OptimResult,
-    min_var: OptimResult | None = None,
-    *,
-    risk_free: float = 0.0193,
-    annual_factor: int = 252,
-    figures_dir: str | None = None,
-) -> Figure:
-    """Deprecated: use plot_report()."""
-    return plot_report(
-        mc_vols=mc_vols,
-        mc_returns=mc_returns,
-        mc_sharpes=mc_sharpes,
-        frontier_vols=frontier_vols,
-        frontier_rets=frontier_rets,
-        tangency=tangency,
-        min_var=min_var,
-        backtests={},
-        risk_free=risk_free,
-        annual_factor=annual_factor,
-        figures_dir=figures_dir,
-    )
-
-
-def plot_backtest(
-    result: BacktestResult,
-    in_sample_sharpe: float,
-    *,
-    figures_dir: str | None = None,
-) -> Figure:
-    """Deprecated: use plot_report() with a single backtest."""
-    fig, (ax0, ax1) = plt.subplots(
-        2, 1, figsize=(14, 10), gridspec_kw={"height_ratios": [3, 2]}
-    )
-    pv = result.portfolio_value
-    sharpes = result.period_sharpes
-
-    # ── Equity curve ──────────────────────────────────────────────────────
-    ax0.plot(pv, color="#2196F3", linewidth=2, zorder=3)
-    ax0.fill_between(
-        pv.index, 1, pv, where=pv >= 1, color="#2196F3", alpha=0.12, zorder=2
-    )
-    ax0.fill_between(
-        pv.index, 1, pv, where=pv < 1, color="#e63946", alpha=0.12, zorder=2
-    )
-    ax0.axhline(1, color="black", linewidth=0.8, alpha=0.4)
-    # Too many vertical lines slows rendering; cap for readability/perf.
-    if len(result.rebal_dates) <= 60:
-        for d in result.rebal_dates:
-            ax0.axvline(d, color="#9E9E9E", linewidth=0.8, linestyle=":", alpha=0.7)
-    ax0.set_title(
-        "Walk-Forward Backtest — Out-of-Sample Equity Curve",
-        fontsize=14,
-        fontweight="bold",
-        pad=10,
-    )
-    ax0.set_ylabel("Portfolio Value", fontsize=11)
-
-    # ── Per-period Sharpe bars ────────────────────────────────────────────
-    bar_colors = ["#4CAF50" if s > 0 else "#e63946" for s in sharpes]
-    ax1.bar(
-        range(len(sharpes)),
-        sharpes,
-        color=bar_colors,
-        edgecolor="white",
-        width=0.7,
-        zorder=3,
-    )
-    ax1.axhline(0, color="black", linewidth=0.8, alpha=0.5)
-    ax1.axhline(
-        in_sample_sharpe,
-        color="#FF5722",
-        ls="--",
-        lw=1.5,
-        zorder=4,
-        label=f"In-sample: {in_sample_sharpe:.2f}",
-    )
-    mean_oos = float(np.mean(sharpes))
-    ax1.axhline(
-        mean_oos,
-        color="#FF9800",
-        ls="--",
-        lw=1.5,
-        zorder=4,
-        label=f"Mean OOS: {mean_oos:.2f}",
-    )
-    ax1.set_xticks(range(len(result.rebal_dates)))
-    ax1.set_xticklabels(
-        [d.strftime("%b %Y") for d in result.rebal_dates],
-        rotation=35,
-        ha="right",
-        fontsize=10,
-    )
-    ax1.set_title("OOS Sharpe Ratio per Period", fontsize=14, fontweight="bold", pad=10)
-    ax1.set_ylabel("Sharpe Ratio", fontsize=11)
-    ax1.legend(fontsize=10, framealpha=0.95)
-
-    fig.tight_layout(h_pad=3)
-    if figures_dir:
-        os.makedirs(figures_dir, exist_ok=True)
-        fig.savefig(
-            os.path.join(figures_dir, "markowitz_walkforward_backtest.png"),
-            dpi=200,
-            bbox_inches="tight",
-        )
-    return fig
-
-
-def plot_strategy_comparison(
-    backtests: dict[str, BacktestResult],
-    *,
-    figures_dir: str | None = None,
-) -> Figure:
-    """Deprecated: use plot_report()."""
-    _apply_professional_style()
-    fig, (ax0, ax1) = plt.subplots(
-        2, 1, figsize=(14, 10), gridspec_kw={"height_ratios": [3, 2]}
-    )
-    _plot_strategy_comparison_axes(ax0, ax1, backtests)
-    fig.tight_layout(h_pad=3)
-    if figures_dir:
-        os.makedirs(figures_dir, exist_ok=True)
-        fig.savefig(
-            os.path.join(figures_dir, "strategy_comparison.png"),
             dpi=200,
             bbox_inches="tight",
         )
