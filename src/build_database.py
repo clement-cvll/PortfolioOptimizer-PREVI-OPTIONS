@@ -24,9 +24,7 @@ MAX_WORKERS = 10
 _HTTP_TIMEOUT = (15.0, 120.0)  # (connect, read) seconds
 _HTTP_RETRIES = 3
 
-PREVI_URL = (
-    "https://www.previ-direct.com/web/eclient-suravenir/perf-uc-previ-options"
-)
+PREVI_URL = "https://www.previ-direct.com/web/eclient-suravenir/perf-uc-previ-options"
 
 
 # ── Scraping ─────────────────────────────────────────────────────────────────
@@ -41,8 +39,10 @@ def _fetch_previ_html() -> bytes:
             if attempt == _HTTP_RETRIES - 1:
                 raise
             wait = 2**attempt
-            print(f"Previ request failed ({type(exc).__name__}), "
-                  f"retry in {wait}s…", file=sys.stderr)
+            print(
+                f"Previ request failed ({type(exc).__name__}), retry in {wait}s…",
+                file=sys.stderr,
+            )
             time.sleep(wait)
     raise RuntimeError("unreachable")
 
@@ -57,9 +57,7 @@ def fetch_tickers() -> pd.DataFrame:
 
     units = [
         {"unit_isin": a1.text.strip(), "unit_name": a2.text.strip()}
-        for row in soup.find_all(
-            "tr", class_="portlet-section-alternate results-row"
-        )
+        for row in soup.find_all("tr", class_="portlet-section-alternate results-row")
         if len(tds := row.find_all("td")) >= 2
         and (a1 := tds[0].find("a"))
         and (a2 := tds[1].find("a"))
@@ -90,7 +88,8 @@ def fetch_tickers() -> pd.DataFrame:
         candidates = {
             t
             for ts in tqdm(
-                pool.map(lookup, units), total=len(units),
+                pool.map(lookup, units),
+                total=len(units),
                 desc="Looking up tickers",
             )
             for t in ts
@@ -101,7 +100,8 @@ def fetch_tickers() -> pd.DataFrame:
         results = [
             f.result()
             for f in tqdm(
-                as_completed(futures), total=len(futures),
+                as_completed(futures),
+                total=len(futures),
                 desc="Filtering tickers",
             )
         ]
@@ -110,9 +110,7 @@ def fetch_tickers() -> pd.DataFrame:
         {t: m for t, m in (r for r in results if r)}, orient="index"
     )
     # Keep the ticker with the most history per fund name
-    return df.loc[df.groupby("name")["n_quotes"].idxmax()].drop(
-        columns=["n_quotes"]
-    )
+    return df.loc[df.groupby("name")["n_quotes"].idxmax()].drop(columns=["n_quotes"])
 
 
 # ── Parquet persistence ──────────────────────────────────────────────────────
@@ -133,17 +131,17 @@ def _load_last_dates() -> dict[str, object]:
 
 
 def _save_last_dates(last_dates: dict[str, object]) -> None:
-    pd.DataFrame({
-        "ticker": list(last_dates.keys()),
-        "last_date": list(last_dates.values()),
-    }).sort_values("ticker").reset_index(drop=True).to_parquet(
+    pd.DataFrame(
+        {
+            "ticker": list(last_dates.keys()),
+            "last_date": list(last_dates.values()),
+        }
+    ).sort_values("ticker").reset_index(drop=True).to_parquet(
         LAST_DATES_PATH, index=False
     )
 
 
-def _to_records(
-    ticker: str, name: str, hist: pd.DataFrame, last_date
-) -> list[tuple]:
+def _to_records(ticker: str, name: str, hist: pd.DataFrame, last_date) -> list[tuple]:
     """Convert yfinance history to flat (date, OHLC, ticker, name) tuples."""
     hist = hist.reset_index()
     hist["Date"] = pd.to_datetime(hist["Date"]).dt.tz_localize(None)
@@ -175,14 +173,20 @@ def _records_to_frame(records: list[tuple]) -> pd.DataFrame:
 
 
 def _download_and_prepare(
-    tickers: list[str], tickers_df: pd.DataFrame,
-    last_dates: dict, **dl_kwargs,
+    tickers: list[str],
+    tickers_df: pd.DataFrame,
+    last_dates: dict,
+    **dl_kwargs,
 ) -> list[tuple]:
     if not tickers:
         return []
     raw = yf.download(
-        tickers, group_by="ticker", auto_adjust=False,
-        progress=True, threads=True, **dl_kwargs,
+        tickers,
+        group_by="ticker",
+        auto_adjust=False,
+        progress=True,
+        threads=True,
+        **dl_kwargs,
     )
     records: list[tuple] = []
     for t in tqdm(tickers, desc="Preparing"):
@@ -204,9 +208,7 @@ def _write_parquet_partitioned(df: pd.DataFrame) -> int:
     ts = int(time.time() * 1000)
     rows = 0
     for (ticker, year), g in fact.groupby(["ticker", "year"], sort=False):
-        part_dir = os.path.join(
-            PARQUET_DIR, f"ticker={ticker}", f"year={int(year)}"
-        )
+        part_dir = os.path.join(PARQUET_DIR, f"ticker={ticker}", f"year={int(year)}")
         os.makedirs(part_dir, exist_ok=True)
         g.drop(columns=["ticker", "year"]).to_parquet(
             os.path.join(part_dir, f"part-{ts}.parquet"), index=False
@@ -225,10 +227,10 @@ def ingest_all(tickers_df: pd.DataFrame, last_dates: dict) -> int:
     records = _download_and_prepare(
         new, tickers_df, {}, period="max"
     ) + _download_and_prepare(
-        existing, tickers_df, last_dates,
-        start=(
-            str(min(last_dates[t] for t in existing)) if existing else None
-        ),
+        existing,
+        tickers_df,
+        last_dates,
+        start=(str(min(last_dates[t] for t in existing)) if existing else None),
     )
     df = _records_to_frame(records)
     written = _write_parquet_partitioned(df)

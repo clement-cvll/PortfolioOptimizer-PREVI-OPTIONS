@@ -5,14 +5,13 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from matplotlib.figure import Figure
-from matplotlib.gridspec import GridSpec
 from matplotlib.ticker import PercentFormatter
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import squareform
 
-from markowitz import BacktestResult, OptimResult
+import config as cfg
+from markowitz import BacktestResult, OptimResult, oos_metrics
 
 _COLORS = {
     "tangency": "#e63946",
@@ -21,66 +20,52 @@ _COLORS = {
     "cml": "#e63946",
     "frontier": "#1a1a2e",
 }
-_FRONTIER_XLIM = (0.0, 0.20)  # vol axis (fraction → %)
-_FRONTIER_YLIM = (0.0, 0.18)  # return axis
-_REPORT_FIGSIZE = (16.0, 9.0)
-_GS_MAIN = dict(hspace=0.1, wspace=0.05)
-_GS_CORR = dict(width_ratios=[0.68, 0.32], wspace=0.02)
+_FRONTIER_XLIM = (0.0, 0.20)
+_FRONTIER_YLIM = (0.0, 0.18)
+_PANEL_FIGSIZE = (8.0, 5.0)
+_CORR_FIGSIZE = (9.0, 7.0)
+_RISK_RC_FIGSIZE = (14.0, 6.5)
+_TOP_RISK_BARS = 8
+_MIN_OTHER_SHARE = 0.005
+_BAR_LABEL_MIN = 0.04
 _SAVE_DPI = 300
 
-
-# ── Style ─────────────────────────────────────────────────────────────────────
+RiskEntry = (
+    tuple[np.ndarray, pd.Index]
+    | tuple[np.ndarray, pd.Index, np.ndarray]
+)
 
 
 def _apply_style() -> None:
     plt.style.use("seaborn-v0_8-whitegrid")
-    plt.rcParams.update({
-        "axes.titlesize": 13,
-        "axes.labelsize": 12,
-        "axes.titlepad": 9,
-        "legend.fontsize": 11,
-        "xtick.labelsize": 11,
-        "ytick.labelsize": 11,
-        "axes.linewidth": 1.1,
-        "xtick.major.width": 0.9,
-        "ytick.major.width": 0.9,
-        "xtick.minor.width": 0.7,
-        "ytick.minor.width": 0.7,
-        "grid.linewidth": 0.5,
-        "lines.linewidth": 1.5,
-        "lines.solid_capstyle": "round",
-        "lines.antialiased": True,
-        "patch.linewidth": 0.75,
-        "axes.spines.top": False,
-        "axes.spines.right": False,
-    })
-
-
-# ── OOS metrics ──────────────────────────────────────────────────────────────
-
-
-def _oos_metrics(
-    bt: BacktestResult, *, annual_factor: int, risk_free: float
-) -> dict[str, float]:
-    r = bt.oos_returns
-    n = len(r)
-    nan = float("nan")
-    if n == 0:
-        return dict(ann_ret=nan, ann_vol=nan, sharpe=nan, max_dd=nan)
-    total_ret = float((1 + r).prod() - 1)
-    ann_ret = (1 + total_ret) ** (annual_factor / n) - 1
-    ann_vol = float(r.std(ddof=1) * np.sqrt(annual_factor)) if n > 1 else nan
-    sharpe = (
-        (ann_ret - risk_free) / (ann_vol + 1e-12)
-        if np.isfinite(ann_vol) else nan
-    )
-    max_dd = float((bt.portfolio_value / bt.portfolio_value.cummax() - 1).min())
-    return dict(
-        ann_ret=float(ann_ret), ann_vol=ann_vol, sharpe=float(sharpe), max_dd=max_dd,
+    plt.rcParams.update(
+        {
+            "axes.titlesize": 13,
+            "axes.labelsize": 12,
+            "axes.titlepad": 9,
+            "legend.fontsize": 11,
+            "xtick.labelsize": 11,
+            "ytick.labelsize": 11,
+            "axes.linewidth": 1.1,
+            "xtick.major.width": 0.9,
+            "ytick.major.width": 0.9,
+            "xtick.minor.width": 0.7,
+            "ytick.minor.width": 0.7,
+            "grid.linewidth": 0.5,
+            "lines.linewidth": 1.5,
+            "lines.solid_capstyle": "round",
+            "lines.antialiased": True,
+            "patch.linewidth": 0.75,
+            "axes.spines.top": False,
+            "axes.spines.right": False,
+        }
     )
 
 
-# ── Per-axis helpers ─────────────────────────────────────────────────────────
+def _save_fig(fig: plt.Figure, path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fig.savefig(path, dpi=_SAVE_DPI, facecolor=fig.get_facecolor(), bbox_inches="tight")
+    plt.close(fig)
 
 
 def _display_name(ticker: str, ticker_names: pd.Series) -> str:
@@ -96,7 +81,6 @@ def _plot_frontier(
     min_var: OptimResult | None,
     risk_free: float,
 ):
-    """Efficient frontier line with CML, tangency, and min-var markers."""
     ax.plot(
         frontier_vols,
         frontier_rets,
@@ -169,34 +153,28 @@ def _plot_equity(
     annual_factor: int,
     risk_free: float,
 ):
-    """OOS equity curves with key stats in the legend."""
     if not backtests:
         ax.set_axis_off()
         ax.text(
-            0.5, 0.5, "No walk-forward backtests",
-            ha="center", va="center", fontsize=11,
+            0.5,
+            0.5,
+            "No walk-forward backtests",
+            ha="center",
+            va="center",
+            fontsize=11,
             transform=ax.transAxes,
         )
         return
 
-    color_cycle = [
-        _COLORS["tangency"], _COLORS["minvar"], _COLORS["equal"],
-    ]
+    color_cycle = [_COLORS["tangency"], _COLORS["minvar"], _COLORS["equal"]]
     ax.axhline(1, color="black", linewidth=0.75, alpha=0.35)
 
     for i, (name, bt) in enumerate(backtests.items()):
-        m = _oos_metrics(
-            bt, annual_factor=annual_factor, risk_free=risk_free
-        )
-        label = (
-            f"{name}  SR {m['sharpe']:.2f}  "
-            f"DD {m['max_dd']:.0%}"
-        )
-        c = color_cycle[i % len(color_cycle)]
-        # Thin lines + slight transparency so overlapping curves stay readable
+        m = oos_metrics(bt, annual_factor=annual_factor, risk_free=risk_free)
+        label = f"{name}  SR {m['sharpe']:.2f}  DD {m['max_dd']:.0%}"
         ax.plot(
             bt.portfolio_value,
-            color=c,
+            color=color_cycle[i % len(color_cycle)],
             linewidth=1.35,
             solid_capstyle="round",
             alpha=0.92,
@@ -209,23 +187,18 @@ def _plot_equity(
     ax.legend(loc="upper left", framealpha=0.95, fontsize=10)
 
 
-def _plot_correlation(
-    ax, cov_df: pd.DataFrame, ticker_names: pd.Series,
-):
-    """Clustered Ledoit-Wolf correlation heatmap (labels = fund names)."""
+def _plot_correlation(ax, cov_df: pd.DataFrame, ticker_names: pd.Series):
     std = np.sqrt(np.diag(cov_df.values))
     std[std == 0] = 1.0
     corr = cov_df.values / np.outer(std, std)
     np.fill_diagonal(corr, 1.0)
 
-    # Dissimilarity = 1 − ρ; linkage() needs condensed form, not a square matrix
     dist = np.clip(1.0 - corr, 0.0, None)
     np.fill_diagonal(dist, 0.0)
     Z = linkage(squareform(dist, checks=False), method="average")
     order = leaves_list(Z)
     corr = corr[np.ix_(order, order)]
-    tickers = cov_df.columns[order]
-    labels = [_display_name(str(t), ticker_names) for t in tickers]
+    labels = [_display_name(str(t), ticker_names) for t in cov_df.columns[order]]
 
     im = ax.imshow(
         corr,
@@ -238,8 +211,7 @@ def _plot_correlation(
     ax.set_xticks(range(len(labels)))
     ax.set_yticks(range(len(labels)))
     ax.set_xticklabels([])
-    n = len(labels)
-    if n <= 25:
+    if len(labels) <= 25:
         ax.set_yticklabels(labels, fontsize=8)
     else:
         ax.set_yticklabels([])
@@ -248,55 +220,135 @@ def _plot_correlation(
     cax = divider.append_axes("right", size="4.2%", pad=0.06)
     cbar = plt.colorbar(im, cax=cax)
     cbar.ax.tick_params(labelsize=9)
-    ax.set_anchor("W")
 
 
-def _plot_risk_contributions(
-    ax,
-    risk_contribs: dict[str, tuple[np.ndarray, pd.Index]],
+def _risk_entry(entry: RiskEntry) -> tuple[np.ndarray, pd.Index, np.ndarray | None]:
+    if len(entry) == 3:
+        return entry[0], entry[1], entry[2]
+    return entry[0], entry[1], None
+
+
+def _truncate_label(text: str, max_len: int = 36) -> str:
+    return text if len(text) <= max_len else text[: max_len - 1] + "…"
+
+
+def _attribution_rows(
+    rc: np.ndarray,
+    tickers: pd.Index,
     ticker_names: pd.Series,
-):
-    """Side-by-side horizontal bar chart of marginal risk contributions."""
-    if not risk_contribs:
+    weights: np.ndarray | None,
+    *,
+    top_n: int = _TOP_RISK_BARS,
+) -> list[dict[str, float | str | None]]:
+    """Top contributors plus optional Other bucket."""
+    order = np.argsort(rc)[::-1]
+    significant = order[rc[order] >= _MIN_OTHER_SHARE]
+    rows: list[dict[str, float | str | None]] = []
+    for i in significant[:top_n]:
+        rows.append({
+            "label": _truncate_label(_display_name(str(tickers[i]), ticker_names)),
+            "risk": float(rc[i]),
+            "weight": float(weights[i]) if weights is not None else None,
+        })
+    if len(significant) > top_n:
+        tail = significant[top_n:]
+        other_risk = float(rc[tail].sum())
+        if other_risk >= _MIN_OTHER_SHARE:
+            other_weight = float(weights[tail].sum()) if weights is not None else None
+            rows.append({
+                "label": f"Other ({len(tail)} funds)",
+                "risk": other_risk,
+                "weight": other_weight,
+            })
+    return rows
+
+
+def _risk_ylabel(row: dict[str, float | str | None]) -> str:
+    label = str(row["label"])
+    weight, risk = row["weight"], row["risk"]
+    if weight is None:
+        return label
+    return f"{label}\n{weight:.0%} weight  ·  {risk:.0%} of risk"
+
+
+def _plot_risk_attribution_panel(
+    ax,
+    portfolio_name: str,
+    rc: np.ndarray,
+    tickers: pd.Index,
+    ticker_names: pd.Series,
+    *,
+    weights: np.ndarray | None,
+    color: str,
+) -> None:
+    rows = _attribution_rows(rc, tickers, ticker_names, weights)
+    if not rows:
         ax.set_axis_off()
         return
 
-    name_list = list(risk_contribs.keys())
-    colors = [_COLORS.get("tangency"), _COLORS.get("minvar")]
-    rc0, tickers0 = risk_contribs[name_list[0]]
-    order = np.argsort(rc0)[::-1]
-    top = min(15, len(order))
-    idx = order[:top]
-
-    y = np.arange(top)
-    bar_h = 0.35
-
-    for k, name in enumerate(name_list):
-        rc, tickers = risk_contribs[name]
-        ax.barh(
-            y + k * bar_h,
-            rc[idx],
-            height=bar_h,
-            color=colors[k % len(colors)],
-            alpha=0.88,
-            linewidth=0.55,
-            edgecolor="white",
-            label=name,
-        )
-
-    ax.set_yticks(y + bar_h * (len(name_list) - 1) / 2)
-    ax.set_yticklabels(
-        [_display_name(str(t), ticker_names) for t in tickers0[idx]],
+    values = np.array([r["risk"] for r in rows])
+    y = np.arange(len(rows))
+    bars = ax.barh(
+        y, values, height=0.72, color=color, alpha=0.92,
+        edgecolor="white", linewidth=0.6,
+    )
+    ax.bar_label(
+        bars,
+        labels=[f"{v:.0%}" if v >= _BAR_LABEL_MIN else "" for v in values],
+        padding=4,
         fontsize=9,
     )
+
+    ax.set_yticks(y)
+    ax.set_yticklabels([_risk_ylabel(r) for r in rows], fontsize=8.5)
     ax.invert_yaxis()
+    ax.set_xlim(0, min(1.05, max(values) * 1.18 + 0.05))
     ax.xaxis.set_major_formatter(PercentFormatter(xmax=1, decimals=0))
-    ax.set_xlabel("Risk Contribution")
-    ax.set_title("Marginal Risk Contributions (top assets)")
-    ax.legend(loc="lower right", framealpha=0.95, fontsize=10)
+    ax.set_xlabel("Share of portfolio volatility", fontsize=10)
+    ax.set_title(portfolio_name, fontsize=12, pad=8)
+
+    top3 = float(np.sort(rc)[::-1][:3].sum())
+    ax.text(
+        0.98, 0.04, f"Top 3 funds: {top3:.0%} of risk",
+        transform=ax.transAxes, ha="right", va="bottom",
+        fontsize=9, color="#444444",
+        bbox=dict(
+            boxstyle="round,pad=0.35",
+            facecolor="white", alpha=0.85, edgecolor="#cccccc",
+        ),
+    )
 
 
-# ── Public entry point ───────────────────────────────────────────────────────
+def _plot_risk_contributions(
+    fig: plt.Figure,
+    risk_contribs: dict[str, RiskEntry],
+    ticker_names: pd.Series,
+) -> None:
+    if not risk_contribs:
+        fig.text(0.5, 0.5, "No risk attribution data", ha="center", va="center")
+        return
+
+    n = len(risk_contribs)
+    axes = np.atleast_1d(fig.subplots(1, n, squeeze=False)).flatten()
+    panel_colors = [_COLORS["tangency"], _COLORS["minvar"]]
+
+    for ax, (name, entry), color in zip(
+        axes, risk_contribs.items(), panel_colors, strict=False,
+    ):
+        rc, tickers, weights = _risk_entry(entry)
+        _plot_risk_attribution_panel(
+            ax, name, rc, tickers, ticker_names, weights=weights, color=color,
+        )
+
+    fig.suptitle(
+        "Which funds drive portfolio risk?",
+        fontsize=14, fontweight="bold", y=1.02,
+    )
+    fig.supxlabel(
+        "Each bar is that fund's share of total portfolio volatility "
+        "(Euler decomposition; all bars sum to 100% per portfolio).",
+        fontsize=10, color="#555555",
+    )
 
 
 def plot_report(
@@ -307,50 +359,54 @@ def plot_report(
     min_var: OptimResult | None,
     backtests: dict[str, BacktestResult],
     cov_df: pd.DataFrame,
-    risk_contribs: dict[str, tuple[np.ndarray, pd.Index]],
+    risk_contribs: dict[str, RiskEntry],
     ticker_names: pd.Series,
-    risk_free: float = 0.0193,
+    risk_free: float,
     annual_factor: int = 252,
     figures_dir: str | None = None,
-) -> Figure:
-    """2×2 figure: frontier, equity, correlation (+ colorbar), risk contributions."""
+    figure_filenames: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Save frontier, equity, correlation, and risk-contribution PNGs."""
     _apply_style()
-    fig = plt.figure(figsize=_REPORT_FIGSIZE, layout="constrained")
-    gs = GridSpec(
-        2, 2, figure=fig,
-        width_ratios=[1, 1], height_ratios=[1, 1], **_GS_MAIN,
-    )
+    names = figure_filenames or cfg.FIGURE_FILENAMES
+    if figures_dir is None:
+        return {}
 
+    saved: dict[str, str] = {}
+
+    fig, ax = plt.subplots(figsize=_PANEL_FIGSIZE, layout="constrained")
     _plot_frontier(
-        fig.add_subplot(gs[0, 0]),
+        ax,
         frontier_vols=frontier_vols,
         frontier_rets=frontier_rets,
         tangency=tangency,
         min_var=min_var,
         risk_free=risk_free,
     )
-    _plot_equity(
-        fig.add_subplot(gs[0, 1]),
-        backtests,
-        annual_factor=annual_factor,
-        risk_free=risk_free,
-    )
+    key = "efficient_frontier"
+    path = os.path.join(figures_dir, names[key])
+    _save_fig(fig, path)
+    saved[key] = path
 
-    gsc = gs[1, 0].subgridspec(1, 2, **_GS_CORR)
-    ax_c = fig.add_subplot(gsc[0, 0])
-    fig.add_subplot(gsc[0, 1]).set_axis_off()
-    _plot_correlation(ax_c, cov_df, ticker_names)
-    _plot_risk_contributions(fig.add_subplot(gs[1, 1]), risk_contribs, ticker_names)
+    fig, ax = plt.subplots(figsize=_PANEL_FIGSIZE, layout="constrained")
+    _plot_equity(ax, backtests, annual_factor=annual_factor, risk_free=risk_free)
+    key = "oos_equity"
+    path = os.path.join(figures_dir, names[key])
+    _save_fig(fig, path)
+    saved[key] = path
 
-    fig.suptitle(
-        "Portfolio Optimizer Report", fontsize=16, fontweight="bold", y=0.995,
-    )
+    fig, ax = plt.subplots(figsize=_CORR_FIGSIZE, layout="constrained")
+    _plot_correlation(ax, cov_df, ticker_names)
+    key = "correlation"
+    path = os.path.join(figures_dir, names[key])
+    _save_fig(fig, path)
+    saved[key] = path
 
-    if figures_dir:
-        os.makedirs(figures_dir, exist_ok=True)
-        fig.savefig(
-            os.path.join(figures_dir, "portfolio_report.png"),
-            dpi=_SAVE_DPI,
-            facecolor=fig.get_facecolor(),
-        )
-    return fig
+    fig = plt.figure(figsize=_RISK_RC_FIGSIZE, layout="constrained")
+    _plot_risk_contributions(fig, risk_contribs, ticker_names)
+    key = "risk_contributions"
+    path = os.path.join(figures_dir, names[key])
+    _save_fig(fig, path)
+    saved[key] = path
+
+    return saved

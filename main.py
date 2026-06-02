@@ -1,7 +1,7 @@
 """Full pipeline: refresh Parquet data, then run analysis.
 
-    uv run main.py            — update data + analyse
-    uv run main.py --rebuild  — re-scrape + rebuild from scratch
+uv run main.py            — update data + analyse
+uv run main.py --rebuild  — re-scrape + rebuild from scratch
 """
 
 import argparse
@@ -20,16 +20,19 @@ def main() -> None:
         description="Update Parquet data, then run Markowitz analysis.",
     )
     parser.add_argument(
-        "--rebuild", action="store_true",
+        "--rebuild",
+        action="store_true",
         help="Re-scrape tickers and rebuild the Parquet dataset from scratch",
     )
     args = parser.parse_args()
     _ensure_src_on_path()
 
     import build_database
+
     build_database.main(rebuild=args.rebuild)
 
     import run_analysis
+
     run_analysis.main()
 
 

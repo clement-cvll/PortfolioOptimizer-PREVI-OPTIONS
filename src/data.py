@@ -13,7 +13,7 @@ def load_prices_parquet(
     ticker_meta_path: str | None,
     years: int,
     annual_factor: int = 252,
-    fill_ratio: float = 0.94,
+    fill_ratio: float = 0.7,
 ) -> tuple[pd.DataFrame, pd.Series]:
     """Load close prices for the last *years* of trading.
 
@@ -27,15 +27,11 @@ def load_prices_parquet(
     df = dataset.to_table(columns=["date", "ticker", "close"]).to_pandas()
 
     if df.empty:
-        raise RuntimeError(
-            f"No data found under parquet_dir={parquet_dir!r}"
-        )
+        raise RuntimeError(f"No data found under parquet_dir={parquet_dir!r}")
 
     df["date"] = pd.to_datetime(df["date"])
     df["ticker"] = df["ticker"].astype(str).astype("category")
-    df["close"] = pd.to_numeric(df["close"], errors="coerce").astype(
-        np.float64
-    )
+    df["close"] = pd.to_numeric(df["close"], errors="coerce").astype(np.float64)
 
     cutoff = df["date"].max() - pd.DateOffset(years=years)
     df = df[df["date"] >= cutoff]
@@ -46,9 +42,7 @@ def load_prices_parquet(
     prices = prices.dropna(axis=1, thresh=thresh).dropna(axis=0)
 
     if ticker_meta_path and os.path.exists(ticker_meta_path):
-        ticker_names = pd.read_parquet(
-            ticker_meta_path
-        ).set_index("ticker")["name"]
+        ticker_names = pd.read_parquet(ticker_meta_path).set_index("ticker")["name"]
     else:
         ticker_names = pd.Series(dtype=object)
 

@@ -19,6 +19,10 @@ MIN_DATA_FILL_RATIO: float = 0.7
 MAX_WEIGHT: float = 1.0
 RISK_FREE_ANNUAL: float = 0.0193  # €STR (ECB overnight rate, Mar 2026)
 WEIGHT_THRESHOLD: float = 0.01
+FRONTIER_N_POINTS: int = 100
+
+# Display
+SHOW_PLOTS: bool = False
 
 # Walk-forward backtest
 REBAL_DAYS: int = 126
@@ -28,3 +32,14 @@ TURNOVER_PENALTY: float = 0.00
 
 # Output paths
 FIGURES_DIR: str = os.path.join(_SRC, "figures")
+FIGURE_EFFICIENT_FRONTIER: str = "efficient_frontier.png"
+FIGURE_OOS_EQUITY: str = "oos_equity.png"
+FIGURE_CORRELATION: str = "correlation.png"
+FIGURE_RISK_CONTRIBUTIONS: str = "risk_contributions.png"
+
+FIGURE_FILENAMES: dict[str, str] = {
+    "efficient_frontier": FIGURE_EFFICIENT_FRONTIER,
+    "oos_equity": FIGURE_OOS_EQUITY,
+    "correlation": FIGURE_CORRELATION,
+    "risk_contributions": FIGURE_RISK_CONTRIBUTIONS,
+}

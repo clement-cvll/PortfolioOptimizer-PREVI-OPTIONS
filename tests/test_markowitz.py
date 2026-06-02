@@ -26,11 +26,13 @@ from markowitz import (
 def synthetic_prices() -> pd.DataFrame:
     rng = np.random.default_rng(123)
     n_days = 200
-    daily = np.column_stack([
-        rng.normal(0.0004, 0.01, n_days),
-        rng.normal(0.0006, 0.03, n_days),
-        rng.normal(-0.0002, 0.015, n_days),
-    ])
+    daily = np.column_stack(
+        [
+            rng.normal(0.0004, 0.01, n_days),
+            rng.normal(0.0006, 0.03, n_days),
+            rng.normal(-0.0002, 0.015, n_days),
+        ]
+    )
     prices = 100 * np.cumprod(1 + daily, axis=0)
     dates = pd.bdate_range("2023-01-01", periods=n_days)
     return pd.DataFrame(prices, index=dates, columns=["A", "B", "C"])

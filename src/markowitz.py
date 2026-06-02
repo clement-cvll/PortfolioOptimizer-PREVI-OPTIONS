@@ -1,6 +1,6 @@
 """Markowitz portfolio optimisation — transforms, solvers, and backtests."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -84,12 +84,52 @@ def format_weights(
     )
 
 
+def oos_metrics(
+    bt: BacktestResult, *, annual_factor: int, risk_free: float
+) -> dict[str, float]:
+    """Full-sample OOS ann. return/vol, Sharpe, and max drawdown."""
+    r = bt.oos_returns
+    n = len(r)
+    nan = float("nan")
+    if n == 0:
+        return dict(ann_ret=nan, ann_vol=nan, sharpe=nan, max_dd=nan)
+    total_ret = float((1 + r).prod() - 1)
+    ann_ret = (1 + total_ret) ** (annual_factor / n) - 1
+    ann_vol = float(r.std(ddof=1) * np.sqrt(annual_factor)) if n > 1 else nan
+    sharpe = (ann_ret - risk_free) / (ann_vol + 1e-12) if np.isfinite(ann_vol) else nan
+    max_dd = float((bt.portfolio_value / bt.portfolio_value.cummax() - 1).min())
+    return dict(
+        ann_ret=float(ann_ret),
+        ann_vol=ann_vol,
+        sharpe=float(sharpe),
+        max_dd=max_dd,
+    )
+
+
 def _optim_setup(n: int, max_weight: float = 1.0):
     """Equal-weight start, long-only bounds, and sum-to-one constraint."""
     x0 = np.ones(n) / n
     bounds = [(0.0, max_weight)] * n
     constraint = {"type": "eq", "fun": lambda w: w.sum() - 1}
     return x0, bounds, constraint
+
+
+def _run_solver(
+    obj: Callable[[np.ndarray], float],
+    mu: np.ndarray,
+    cov: np.ndarray,
+    *,
+    x0: np.ndarray,
+    bounds: list,
+    eq: dict,
+    annual_factor: int,
+    risk_free: float,
+) -> OptimResult:
+    res = minimize(obj, x0, method="SLSQP", constraints=[eq], bounds=bounds)
+    ret, vol, sharpe = portfolio_stats(
+        res.x, mu, cov, annual_factor=annual_factor, risk_free=risk_free
+    )
+    return OptimResult(weights=res.x, ret=ret, vol=vol, sharpe=sharpe)
 
 
 # ── Optimisation ─────────────────────────────────────────────────────────────
@@ -117,11 +157,16 @@ def max_sharpe(
         )[2]
         return float(-sharpe + lam * np.abs(w - prev).sum())
 
-    res = minimize(obj, x0, method="SLSQP", constraints=[eq], bounds=bounds)
-    ret, vol, sharpe = portfolio_stats(
-        res.x, mu, cov, annual_factor=annual_factor, risk_free=risk_free
+    return _run_solver(
+        obj,
+        mu,
+        cov,
+        x0=x0,
+        bounds=bounds,
+        eq=eq,
+        annual_factor=annual_factor,
+        risk_free=risk_free,
     )
-    return OptimResult(weights=res.x, ret=ret, vol=vol, sharpe=sharpe)
 
 
 def min_variance(
@@ -144,11 +189,16 @@ def min_variance(
         vol = np.sqrt(w @ cov @ w * annual_factor)
         return float(vol + lam * np.abs(w - prev).sum())
 
-    res = minimize(obj, x0, method="SLSQP", constraints=[eq], bounds=bounds)
-    ret, vol, sharpe = portfolio_stats(
-        res.x, mu, cov, annual_factor=annual_factor, risk_free=risk_free
+    return _run_solver(
+        obj,
+        mu,
+        cov,
+        x0=x0,
+        bounds=bounds,
+        eq=eq,
+        annual_factor=annual_factor,
+        risk_free=risk_free,
     )
-    return OptimResult(weights=res.x, ret=ret, vol=vol, sharpe=sharpe)
 
 
 def efficient_frontier(
@@ -158,19 +208,19 @@ def efficient_frontier(
     n_assets: int,
     max_weight: float = 1.0,
     annual_factor: int = 252,
-    n_points: int = 200,
+    n_points: int = 100,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Sweep target volatilities and maximise return at each level."""
     x0, bounds, eq = _optim_setup(n_assets, max_weight)
 
     mv = min_variance(
-        mu, cov, n_assets=n_assets, max_weight=max_weight,
+        mu,
+        cov,
+        n_assets=n_assets,
+        max_weight=max_weight,
         annual_factor=annual_factor,
     )
-    # Upper bound: max individual-asset vol (extends frontier past best-return corner)
-    max_vol = float(
-        np.sqrt(np.maximum(np.diag(cov), 0.0) * annual_factor).max()
-    )
+    max_vol = float(np.sqrt(np.maximum(np.diag(cov), 0.0) * annual_factor).max())
 
     pairs: list[tuple[float, float]] = []
     for target_vol in np.linspace(mv.vol, max_vol, n_points):
@@ -192,7 +242,10 @@ def efficient_frontier(
             ret = float(mu @ res.x * annual_factor)
             vol = float(np.sqrt(res.x @ cov @ res.x * annual_factor))
             pairs.append((vol, ret))
+            x0 = res.x.copy()
 
+    if not pairs:
+        return np.array([]), np.array([])
     arr = np.array(pairs)
     return arr[:, 0], arr[:, 1]
 
@@ -221,6 +274,27 @@ def _period_sharpe(
     ann_ret = (1 + simple_returns).prod() ** (annual_factor / n) - 1
     ann_vol = simple_returns.std() * np.sqrt(annual_factor)
     return float((ann_ret - risk_free) / (ann_vol + 1e-12))
+
+
+def _finish_backtest(
+    period_returns: list[pd.Series],
+    rebal_dates: list[pd.Timestamp],
+    *,
+    annual_factor: int,
+    risk_free: float,
+) -> BacktestResult:
+    oos_returns = pd.concat(period_returns)
+    portfolio_value = (1 + oos_returns).cumprod()
+    period_sharpes = [
+        _period_sharpe(pr, annual_factor=annual_factor, risk_free=risk_free)
+        for pr in period_returns
+    ]
+    return BacktestResult(
+        portfolio_value=portfolio_value,
+        oos_returns=oos_returns,
+        period_sharpes=period_sharpes,
+        rebal_dates=rebal_dates,
+    )
 
 
 def walk_forward_backtest(
@@ -253,17 +327,15 @@ def walk_forward_backtest(
         opt_kw["risk_free"] = risk_free
 
     for rebal, test_lr in _each_oos_period(
-        log_returns, rebal_days, min_train_days,
+        log_returns,
+        rebal_days,
+        min_train_days,
     ):
         train_lr = log_returns.iloc[:rebal]
-
         mu_wf = train_lr.mean().values
-        cov_wf = LedoitWolf().fit(train_lr.values).covariance_
-        weights = solver(
-            mu_wf, cov_wf, prev_weights=prev_weights, **opt_kw
-        ).weights
+        cov_wf = shrink_covariance(train_lr).values
+        weights = solver(mu_wf, cov_wf, prev_weights=prev_weights, **opt_kw).weights
 
-        # Log → simple returns for P&L, then deduct costs on day 1
         period_ret = (np.exp(test_lr) - 1) @ weights
         turnover = np.abs(weights - prev_weights).sum()
         period_ret.iloc[0] -= transaction_cost * turnover
@@ -272,18 +344,11 @@ def walk_forward_backtest(
         period_returns.append(period_ret)
         rebal_dates.append(test_lr.index[0])
 
-    oos_returns = pd.concat(period_returns)
-    portfolio_value = (1 + oos_returns).cumprod()
-    period_sharpes = [
-        _period_sharpe(pr, annual_factor=annual_factor, risk_free=risk_free)
-        for pr in period_returns
-    ]
-
-    return BacktestResult(
-        portfolio_value=portfolio_value,
-        oos_returns=oos_returns,
-        period_sharpes=period_sharpes,
-        rebal_dates=rebal_dates,
+    return _finish_backtest(
+        period_returns,
+        rebal_dates,
+        annual_factor=annual_factor,
+        risk_free=risk_free,
     )
 
 
@@ -303,21 +368,16 @@ def equal_weight_backtest(
     rebal_dates: list[pd.Timestamp] = []
 
     for _, test_lr in _each_oos_period(
-        log_returns, rebal_days, min_train_days,
+        log_returns,
+        rebal_days,
+        min_train_days,
     ):
         period_returns.append((np.exp(test_lr) - 1) @ w)
         rebal_dates.append(test_lr.index[0])
 
-    oos_returns = pd.concat(period_returns)
-    portfolio_value = (1 + oos_returns).cumprod()
-    period_sharpes = [
-        _period_sharpe(pr, annual_factor=annual_factor, risk_free=risk_free)
-        for pr in period_returns
-    ]
-
-    return BacktestResult(
-        portfolio_value=portfolio_value,
-        oos_returns=oos_returns,
-        period_sharpes=period_sharpes,
-        rebal_dates=rebal_dates,
+    return _finish_backtest(
+        period_returns,
+        rebal_dates,
+        annual_factor=annual_factor,
+        risk_free=risk_free,
     )

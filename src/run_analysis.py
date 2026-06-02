@@ -30,8 +30,7 @@ def _print_portfolio(name: str, result, prices, ticker_names) -> None:
         )
     )
     print(
-        f"  Return {result.ret:.2%}  Vol {result.vol:.2%}  "
-        f"Sharpe {result.sharpe:.2f}\n"
+        f"  Return {result.ret:.2%}  Vol {result.vol:.2%}  Sharpe {result.sharpe:.2f}\n"
     )
 
 
@@ -71,12 +70,21 @@ def main() -> None:
         n_assets=n,
         max_weight=cfg.MAX_WEIGHT,
         annual_factor=cfg.ANNUAL_FACTOR,
+        n_points=cfg.FRONTIER_N_POINTS,
     )
 
     rc = dict(cov=cov, annual_factor=cfg.ANNUAL_FACTOR)
     risk_contribs = {
-        "Tangency": (risk_contributions(tangency.weights, **rc), prices.columns),
-        "Min Var": (risk_contributions(min_var.weights, **rc), prices.columns),
+        "Max Sharpe portfolio": (
+            risk_contributions(tangency.weights, **rc),
+            prices.columns,
+            tangency.weights,
+        ),
+        "Min variance portfolio": (
+            risk_contributions(min_var.weights, **rc),
+            prices.columns,
+            min_var.weights,
+        ),
     }
 
     bt_kw = dict(
@@ -109,7 +117,7 @@ def main() -> None:
             f"mean OOS Sharpe {m:.2f}"
         )
 
-    plot_report(
+    saved = plot_report(
         frontier_vols=front_vols,
         frontier_rets=front_rets,
         tangency=tangency,
@@ -125,8 +133,13 @@ def main() -> None:
         risk_free=cfg.RISK_FREE_ANNUAL,
         annual_factor=cfg.ANNUAL_FACTOR,
         figures_dir=cfg.FIGURES_DIR,
+        figure_filenames=cfg.FIGURE_FILENAMES,
     )
-    plt.show()
+    for path in saved.values():
+        print(f"Saved figure: {path}")
+
+    if cfg.SHOW_PLOTS:
+        plt.show()
 
 
 if __name__ == "__main__":
